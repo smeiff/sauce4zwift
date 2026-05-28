@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html class="use-aspect-ratio hidden-during-load" tabindex="0">
+    <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+        <meta name="apple-mobile-web-app-capable" content="yes"/>
+        <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline';"/>
+
+        <title>Gear Display - Sauce for Zwift™</title>
+
+        <script src="../src/preloads.js"></script>
+
+        <link rel="manifest" href="gear-manifest.json"/>
+        <link id="favicon" rel="shortcut icon" href="../images/favicon.png"/>
+        <link rel="stylesheet" href="../css/common.css"/>
+
+        <style>
+            body {
+                margin: 0;
+                padding: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                background: rgba(0, 0, 0, 0.3);
+                font-family: monospace;
+            }
+            #content {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 1rem;
+                padding: 1rem;
+            }
+            .gear-display {
+                display: flex;
+                flex-direction: column;
+                gap: 1rem;
+                align-items: center;
+                justify-content: center;
+            }
+            .gear-section {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 0.5rem;
+            }
+            .gear-label {
+                font-size: 0.9rem;
+                opacity: 0.7;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+            }
+            .gear-value {
+                font-size: 2.5rem;
+                font-weight: bold;
+                color: #0f0;
+                text-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+            }
+            #note {
+                font-size: 0.7rem;
+                opacity: 0.5;
+                text-align: center;
+                max-width: 200px;
+            }
+        </style>
+
+        <script type="module">
+            import * as Common from '../src/common.mjs';
+
+            Common.enableSentry();
+
+            async function updateGearDisplay() {
+                try {
+                    const athleteData = await Common.rpc.getAthleteData('self', {
+                        fresh: true,
+                        includeLists: false,
+                    });
+
+                    console.log('athleteData:', athleteData);
+
+                    // Gear data is not available from Zwift API
+                    // Try to show something useful from available data
+                    let displayText = 'N/A';
+                    
+                    if (athleteData?.state) {
+                        const state = athleteData.state;
+                        
+                        // Show power/cadence or sport info as alternative
+                        if (state.power !== undefined && state.cadence !== undefined) {
+                            displayText = `${state.power}W / ${Math.round(state.cadence / 1e6 * 60)}rpm`;
+                        } else if (state.sport) {
+                            displayText = state.sport.charAt(0).toUpperCase() + state.sport.slice(1);
+                        }
+                    }
+
+                    document.getElementById('gear-value').textContent = displayText;
+                    document.getElementById('note').textContent = 'Gear data not available from Zwift API';
+                } catch (e) {
+                    console.error('Error updating gear display:', e);
+                    document.getElementById('gear-value').textContent = 'ERROR';
+                    document.getElementById('note').textContent = e.message;
+                }
+            }
+
+            window.addEventListener('load', () => {
+                updateGearDisplay();
+                setInterval(updateGearDisplay, 500);
+            });
+        </script>
+    </head>
+    <body class="transparent-bg">
+        <div id="content">
+            <div class="gear-display">
+                <div class="gear-section">
+                    <div class="gear-label">Bike Info</div>
+                    <div id="gear-value" class="gear-value">-</div>
+                    <div id="note"></div>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

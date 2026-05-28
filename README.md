@@ -142,7 +142,7 @@ https://www.sauce.llc/products/sauce4zwift/release_notes
 
 Support my work
 --------
-<a href="https://www.patreon.com/bePatron?u=32064618" target="_blank">
+
     <img src="pages/images/become_a_patron_button@2x.png" width="150"/>
 </a>
 

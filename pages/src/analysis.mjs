@@ -613,6 +613,60 @@ function createTimeInPowerZonesPie(el) {
 }
 
 
+function createTimeInHeartRateZonesPie(el) {
+    const chart = Echarts.init(el, 'sauce', {renderer: 'svg'});
+    const hrZoneColors = {
+        'Z1': '#4CAF50',  // Green
+        'Z2': '#2196F3',  // Blue
+        'Z3': '#FFC107',  // Amber
+        'Z4': '#FF9800',  // Orange
+        'Z5': '#F44336',  // Red
+    };
+    chart.setOption({
+        tooltip: {
+            className: 'ec-tooltip'
+        },
+        series: [{
+            type: 'pie',
+            radius: ['30%', '90%'],
+            minShowLabelAngle: 20,
+            label: {
+                show: true,
+                position: 'inner',
+            },
+            tooltip: {
+                valueFormatter: x => H.timer(x, {long: true})
+            },
+            emphasis: {
+                itemStyle: {
+                    shadowBlur: 10,
+                    shadowOffsetX: 0,
+                    shadowColor: 'rgba(0, 0, 0, 0.5)'
+                }
+            }
+        }],
+    });
+    chart.updateData = () => {
+        if (!athlete?.maxHeartRate || !athleteData?.timeInHeartRateZones) {
+            return;
+        }
+        const zones = athleteData.timeInHeartRateZones || [];
+        chart.setOption({
+            series: [{
+                data: zones.map(x => ({
+                    name: x.zone,
+                    value: x.time,
+                    label: {color: '#fff'},
+                    itemStyle: {color: hrZoneColors[x.zone] || '#999'},
+                })),
+            }],
+        });
+    };
+    new ResizeObserver(() => chart.resize()).observe(el);
+    return chart;
+}
+
+
 function valueGradient(color, value) {
     const shadeColor = SC.color.parse(color).adjustLight(0.2).adjustSaturation(-0.2).toString({rgb:true});
     return {
@@ -749,7 +803,7 @@ function centerMap(positions) {
 
 export async function main() {
     Common.initInteractionListeners();
-    [athlete, templates, nationFlags, worldList, powerZones] = await Promise.all([
+    const [athlete_v, templates_v, nationFlags_v, worldList_v, powerZones_v, heartRateZones_v] = await Promise.all([
         Common.rpc.getAthlete(athleteIdent),
         getTemplates([
             'main',
@@ -764,7 +818,13 @@ export async function main() {
         Common.initNationFlags(),
         Common.getWorldList({all: true}),
         Common.rpc.getPowerZones(1),
+        Common.rpc.getHeartRateZones(1),
     ]);
+    athlete = athlete_v;
+    templates = templates_v;
+    nationFlags = nationFlags_v;
+    worldList = worldList_v;
+    powerZones = powerZones_v;
     await renderSurgicalTemplate('#content', templates.main, {
         loading: true,
         nationFlags,

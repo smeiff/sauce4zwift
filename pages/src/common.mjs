@@ -45,6 +45,40 @@ export let cpuState;
 export const sleep = _sleep;
 export const expWeightedAvg = _expWeightedAvg;
 
+export function spawnRideOnIcon() {
+    const icon = document.createElement('ms');
+    icon.textContent = 'thumb_up';
+    Object.assign(icon.style, {
+        position: 'fixed',
+        bottom: '20%',
+        left: `${20 + Math.random() * 60}%`,
+        fontSize: `${3 + Math.random() * 2}rem`,
+        color: '#0060cb',
+        textShadow: '0 0 10px #fff',
+        pointerEvents: 'none',
+        zIndex: '100',
+        transition: 'all 2s ease-in-out',
+        opacity: '0',
+        transform: 'translateY(0) scale(0.5)'
+    });
+    document.body.appendChild(icon);
+    
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            icon.style.opacity = '1';
+            icon.style.transform = `translateY(-${100 + Math.random() * 100}px) scale(1)`;
+            setTimeout(() => {
+                icon.style.opacity = '0';
+            }, 1000);
+        });
+    });
+    
+    setTimeout(() => {
+        icon.remove();
+    }, 2000);
+}
+
+
 
 function DEPRECATED(obj, label) {
     return new Proxy(obj, {

@@ -132,6 +132,7 @@ export async function render(el, tpl, tplData) {
                 }
             } else if (a.dataset.action === 'rideon') {
                 await Common.rpc.giveRideon(athleteId);
+                Common.spawnRideOnIcon();
                 tplData.rideonSent = true;
             } else if (a.dataset.action === 'close') {
                 await Common.rpc.closeOwnWindow();
@@ -205,7 +206,13 @@ export async function render(el, tpl, tplData) {
             .map(x => [x.dataset.id, x]));
         liveEls.world.textContent = world ? world.name : '-';
         liveEls.power.innerHTML = H.power(state.power, {suffix: true, html: true});
-        liveEls.speed.innerHTML = H.pace(state.speed, {suffix: true, html: true, sport: state.sport});
+        if (state.sport === 'cycling') {
+            const speed = Common.imperialUnits ? state.speed / 1.609344 : state.speed;
+            const unit = Common.imperialUnits ? 'mph' : 'kph';
+            liveEls.speed.innerHTML = `${H.number(speed, {precision: 1})}<abbr>${unit}</abbr>`;
+        } else {
+            liveEls.speed.innerHTML = H.pace(state.speed, {suffix: true, html: true, sport: state.sport});
+        }
         liveEls.hr.innerHTML = H.number(state.heartrate, {suffix: 'bpm', html: true});
         liveEls.rideons.textContent = H.number(state.rideons);
         liveEls.kj.innerHTML = H.number(state.kj, {suffix: 'kJ', html: true});

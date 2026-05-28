@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html class="use-aspect-ratio hidden-during-load" tabindex="0">
+<html class="hidden-during-load" tabindex="0">
     <head>
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
@@ -15,6 +15,56 @@
         <link rel="stylesheet" href="../css/common.css"/>
         <link rel="stylesheet" href="../css/gauge.css"/>
 
+        <style>
+            #content {
+                display: flex;
+                flex-direction: column;
+                height: 100vh;
+                width: 100vw;
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            .simple-gauge {
+                display: flex;
+                flex-direction: column;
+                width: 100%;
+                height: 100%;
+            }
+            .gauge-bar-track {
+                width: 100%;
+                height: 8px;
+                background: rgba(255, 255, 255, 0.1);
+            }
+            .gauge-bar-fill {
+                height: 100%;
+                width: 0%;
+                background-color: var(--gauge-color, #a0a0a0);
+                transition: width 0.2s ease-out, background-color 0.2s ease;
+            }
+            .gauge-data {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                padding: 10px;
+            }
+            .gauge-value {
+                font-size: 35vmin;
+                font-weight: bold;
+                line-height: 1;
+                text-shadow: 2px 2px 4px rgba(0,0,0,0.4);
+            }
+            .gauge-label {
+                font-size: 8vmin;
+                opacity: 0.6;
+                text-transform: uppercase;
+                letter-spacing: 0.1em;
+                margin-top: 5px;
+            }
+        </style>
+
         <script type="module">
             import {main} from '../src/gauge.mjs';
             main();
@@ -23,7 +73,6 @@
     <body class="transparent-bg">
         <div id="titlebar">
             <header>
-                <div class="logo"><img src="../images/icon128.png"/></div>
                 <div class="title">W'bal Gauge</div>
                 <div class="filler"></div>
                 <div class="buttons">
@@ -35,7 +84,15 @@
             </header>
         </div>
         <div id="content">
-            <div class="gauge"></div>
+            <div class="simple-gauge">
+                <div class="gauge-bar-track">
+                    <div class="gauge-bar-fill" id="gauge-fill"></div>
+                </div>
+                <div class="gauge-data">
+                    <div class="gauge-value" id="gauge-value">--</div>
+                    <div class="gauge-label">W'bal</div>
+                </div>
+            </div>
         </div>
         <div id="hintbar">
             <div class="hint"></div>

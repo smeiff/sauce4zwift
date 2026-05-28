@@ -273,7 +273,17 @@ Electron.ipcMain.handle('subscribe', (ev, {event, persistent, source='stats', op
                 console.warn("Converting undefined to null: prevent this at the emitter source");
                 data = null;
             }
-            json = JSON.stringify(data);
+            try {
+                json = JSON.stringify(data, (key, value) => {
+                    if (typeof value === 'bigint') {
+                        return value.toString();
+                    }
+                    return value;
+                });
+            } catch (e) {
+                console.error("Failed to serialize data for IPC:", e, data);
+                return;
+            }
             if (data != null && typeof data === 'object') {
                 serialCache.set(data, json);
             }
@@ -390,9 +400,6 @@ class ElectronSauceApp extends App.SauceApp {
             await Secrets.remove('zwift-monitor-login').catch(Report.error);
             await Electron.session.defaultSession.clearStorageData().catch(Report.error);
             await Electron.session.defaultSession.clearCache().catch(Report.error);
-            const patreonSession = Electron.session.fromPartition('persist:patreon');
-            await patreonSession.clearStorageData().catch(Report.error);
-            await patreonSession.clearCache().catch(Report.error);
             for (const {id} of Windows.getProfiles()) {
                 const s = Windows.loadSession(id);
                 await s.clearStorageData().catch(Report.error);

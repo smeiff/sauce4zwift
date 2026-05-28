@@ -13,6 +13,31 @@ function updateConnStatus(s) {
 }
 
 
+let autoRideOnInterval;
+const autoRideOnGiven = new Set();
+
+function toggleAutoRideOn(btn) {
+    const active = btn.classList.toggle('active');
+    btn.classList.toggle('primary', active);
+    if (active) {
+        autoRideOnGiven.clear();
+        autoRideOnInterval = setInterval(async () => {
+            const nearby = await Common.rpc.getNearbyData();
+            for (const {athleteId} of nearby || []) {
+                if (!autoRideOnGiven.has(athleteId)) {
+                    autoRideOnGiven.add(athleteId);
+                    Common.rpc.giveRideon(athleteId).catch(console.warn);
+                    Common.spawnRideOnIcon();
+                    await new Promise(r => setTimeout(r, 500)); // Rate limit API calls
+                }
+            }
+        }, 5000);
+    } else {
+        clearInterval(autoRideOnInterval);
+    }
+}
+
+
 export async function main() {
     Common.initInteractionListeners();
     Common.subscribe('status', updateConnStatus, {source: 'gameConnection', persistent: true});
@@ -21,8 +46,15 @@ export async function main() {
         if (!btn) {
             return;
         }
+        if (btn.dataset.action === 'auto-rideon') {
+            toggleAutoRideOn(btn);
+            return;
+        }
         const args = btn.dataset.args ? JSON.parse(btn.dataset.args) : [];
         Common.rpc[btn.dataset.call](...args);
+        if (btn.dataset.call === 'say' && args[0] === 'rideon') {
+            Common.spawnRideOnIcon();
+        }
     });
     document.addEventListener('sauce-ws-status', async ({detail}) => {
         if (detail === 'connected') {

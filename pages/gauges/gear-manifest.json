@@ -1,0 +1,15 @@
+{
+    "short_name": "Gear Display",
+    "name": "Sauce for Zwift™ - Gear Display",
+    "background_color": "black",
+    "theme_color": "black",
+    "description": "Sauce for Zwift - Current Gear Display Window",
+    "start_url": "/pages/gauges/gear.html",
+    "display": "standalone",
+    "orientation": "any",
+    "icons": [{
+        "src": "/pages/images/favicon.png",
+        "sizes": "any",
+        "type": "image/png"
+    }]
+}

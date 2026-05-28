@@ -1233,6 +1233,17 @@ export class StatsProcessor extends Events.EventEmitter {
         return zones;
     }
 
+    getHeartRateZones(maxHR) {
+        // Standard 5-zone HR model based on max heart rate
+        return [
+            {zone: 'Z1', from: 0, to: maxHR * 0.50},
+            {zone: 'Z2', from: maxHR * 0.50, to: maxHR * 0.60},
+            {zone: 'Z3', from: maxHR * 0.60, to: maxHR * 0.70},
+            {zone: 'Z4', from: maxHR * 0.70, to: maxHR * 0.85},
+            {zone: 'Z5', from: maxHR * 0.85, to: Infinity},
+        ];
+    }
+
     _getCustomPowerZones(ftp) {
         return this._customPowerZones ? this._customPowerZones.map(x => ({
             zone: x.zone,
@@ -2812,6 +2823,10 @@ export class StatsProcessor extends Events.EventEmitter {
         if (ad.timeInPowerZones.ftp !== ftp) {
             ad.timeInPowerZones.configure(ftp, ftp ? this.getPowerZones(ftp) : null);
         }
+        const maxHR = athlete.maxHeartRate;
+        if (ad.timeInHeartRateZones.maxHR !== maxHR) {
+            ad.timeInHeartRateZones.configure(maxHR, maxHR ? this.getHeartRateZones(maxHR) : null);
+        }
     }
 
     _createAthleteData(state, now) {
@@ -2831,6 +2846,7 @@ export class StatsProcessor extends Events.EventEmitter {
             mostRecentState: null,
             wBal: new WBalAccumulator(),
             timeInPowerZones: new ZonesAccumulator(),
+            timeInHeartRateZones: new ZonesAccumulator(),
             smoothGrade: Sauce.data.expWeightedAvg(8),
             streams: {
                 distance: [],
@@ -2943,8 +2959,8 @@ export class StatsProcessor extends Events.EventEmitter {
             this._athleteData.set(state.athleteId, this._createAthleteData(state, now));
         }
         const worldMeta = Env.worldMetas[state.courseId];
-        const elOffset = worldMeta.eleOffset || 0;
         if (worldMeta) {
+            const elOffset = worldMeta.eleOffset || 0;
             state.latlng = worldMeta.flippedHack ?
                 [(state.x / (worldMeta.latDegDist * 100)) + worldMeta.latOffset,
                     (state.y / (worldMeta.lonDegDist * 100)) + worldMeta.lonOffset] :
@@ -3328,6 +3344,9 @@ export class StatsProcessor extends Events.EventEmitter {
         } else {
             const time = (state.worldTime - ad.wtOffset) / 1000;
             ad.timeInPowerZones.accumulate(time, state.power);
+            if (state.heartrate) {
+                ad.timeInHeartRateZones.accumulate(time, state.heartrate);
+            }
             addCount = ad.bucket.power.add(time, state.power);
             ad.bucket.speed.add(time, state.speed);
             ad.bucket.hr.add(time, state.heartrate);
@@ -4335,6 +4354,7 @@ export class StatsProcessor extends Events.EventEmitter {
             isGapEst: ad.isGapEst ? true : undefined,
             wBal: ad.eventPrivacy.hideWBal ? undefined : ad.wBal.get(),
             timeInPowerZones: ad.eventPrivacy.hideFTP ? undefined : ad.timeInPowerZones.get(),
+            timeInHeartRateZones: ad.timeInHeartRateZones.get(),
             ...(state && this._getEventOrRouteInfo(state)),
             ...ad.userDefined,
         };

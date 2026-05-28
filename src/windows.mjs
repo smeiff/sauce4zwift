@@ -3,7 +3,6 @@ import Process from 'node:process';
 import OS from 'node:os';
 import NodeURL from 'node:url';
 import * as Storage from './storage.mjs';
-import * as Patreon from './patreon.mjs';
 import * as RPC from './rpc.mjs';
 import * as Mods from './mods.mjs';
 import {EventEmitter} from 'node:events';
@@ -59,6 +58,10 @@ const defaultWidgetWindows = [{
     id: 'default-geo-1',
     type: 'geo',
     options: {x: -8, y: 40},
+}, {
+    id: 'default-gear-1',
+    type: 'gear-gauge',
+    options: {x: 680, y: 40},
 }];
 
 
@@ -1838,67 +1841,8 @@ export function systemMessage(msg) {
 
 
 export async function patronLink({sauceApp, requireLegacy, forceCheck}) {
-    let membership = Storage.get('patron-membership');
-    if (membership && membership.patronLevel >= 10 && !forceCheck) {
-        return true;  // XXX Implement refresh once in a while.
-    }
-    const win = SauceBrowserWindow.make({
-        file: '/pages/patron.html',
-        width: 400,
-        height: 720,
-        disableNewWindowHandler: true,
-        metaFlags: {requireLegacy},
-    }, {
-        devTools: false,
-        preload: Path.join(appPath, 'src/preload/patron-link.js'),
-        session: loadSession('patreon'),
-    });
-    // Prevent Patreon's datedome.co bot service from blocking us and fix federated logins.. (legacy only now)
-    emulateNormalUserAgent(win);
-    win.webContents.ipc.on('patreon-reset-session', () => {
-        win.webContents.session.clearStorageData();
-        win.webContents.session.clearCache();
-        electron.app.relaunch();
-        win.close();
-    });
-    let resolve;
-    win.webContents.ipc.on('patreon-special-token', (ev, token) => resolve({token}));
-    win.webContents.ipc.on('patreon-auth-code', (ev, code) => resolve({code, legacy: true}));
-    sauceApp.on('external-open', x => {
-        if (x.name === 'patron' && x.path === '/link') {
-            resolve({code: x.data.code});
-        }
-    });
-    win.on('closed', () => resolve({closed: true}));
-    let isMember = false;
-    while (true) {
-        const {code, token, closed, legacy} = await new Promise(_resolve => resolve = _resolve);
-        let isAuthed;
-        if (closed) {
-            return isMember;
-        } else if (token) {
-            membership = await Patreon.getLegacyMembership(token);
-        } else {
-            win.loadFile('/pages/patron-checking.html');
-            isAuthed = code && await Patreon.link(code, {legacy});
-            membership = isAuthed && await Patreon.getMembership({legacy});
-        }
-        if (membership && membership.patronLevel >= 10) {
-            isMember = true;
-            Storage.set('patron-membership', membership);
-            win.loadFile('/pages/patron-success.html');
-        } else {
-            const query = {};
-            if (isAuthed) {
-                query.id = Patreon.getUserId();
-                if (membership) {
-                    query.isPatron = true;
-                    query.patronLevel = membership.patronLevel;
-                }
-            }
-            win.loadFile('/pages/non-patron.html', {query});
-        }
-    }
+    // Patreon authentication removed - skip check
+    return true;
 }
 
 

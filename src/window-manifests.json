@@ -138,6 +138,13 @@
     "prettyDesc": "Car style W'bal gauge",
     "options": {"width": 0.20, "aspectRatio": 0.8}
 }, {
+    "type": "gear-gauge",
+    "groupTitle": "Gauges",
+    "file": "/pages/gauges/gear.html",
+    "prettyName": "Gear Display",
+    "prettyDesc": "Current gear (front/rear) display",
+    "options": {"width": 0.15, "aspectRatio": 1}
+}, {
     "type": "stats-for-nerds",
     "groupTitle": "Misc",
     "file": "/pages/stats-for-nerds.html",

@@ -262,7 +262,7 @@ export class SauceApp extends EventEmitter {
         });
         this.statsProc.start();
         const statsRPCMethods = [
-            'getPowerZones', 'updateAthlete', 'startLap', 'resetStats', 'exportFIT', 'getAthlete',
+            'getPowerZones', 'getHeartRateZones', 'updateAthlete', 'startLap', 'resetStats', 'exportFIT', 'getAthlete',
             'getAthletes', 'getFollowingAthletes', 'getFollowerAthletes', 'getMarkedAthletes',
             'searchAthletes', 'getCachedEvent', 'getCachedEvents', 'getEvent', 'getEventSubgroup',
             'getEventSubgroupEntrants', 'getEventSubgroupResults', 'addEventSubgroupSignup',

@@ -3,35 +3,12 @@ NODE := ../../node_modules
 
 default: flags echarts saucecharts
 
-
 flags:
-	mkdir -p flags
-	cp $(NODE)/world_countries_lists/data/flags/64x64/*.png flags/
+	powershell.exe -NoProfile -Command "if (-not (Test-Path flags)) { mkdir flags | Out-Null }; Copy-Item '$\world_countries_lists\data\flags\64x64\*.png' -Destination 'flags\'"
 
 echarts:
-	mkdir -p src
-	cp $(NODE)/echarts/dist/echarts.esm.min.js src/echarts.mjs
+	powershell.exe -NoProfile -Command "if (-not (Test-Path src)) { mkdir src | Out-Null }; Copy-Item '$\echarts\dist\echarts.esm.min.js' -Destination 'src\echarts.mjs'"
 
 saucecharts:
-	mkdir -p css/saucecharts src/saucecharts
-	cp -r $(NODE)/saucecharts/src/* src/saucecharts/
-	cp -r $(NODE)/saucecharts/css/* css/saucecharts/
+	powershell.exe -NoProfile -Command "if (-not (Test-Path 'css\saucecharts')) { mkdir 'css\saucecharts' | Out-Null }; if (-not (Test-Path 'src\saucecharts')) { mkdir 'src\saucecharts' | Out-Null }; Copy-Item '$\saucecharts\src\*' -Destination 'src\saucecharts' -Recurse -Force; Copy-Item '$\saucecharts\css\*' -Destination 'css\saucecharts' -Recurse -Force"
 
-dev:
-	rm -rf src/saucecharts
-	mkdir src/saucecharts
-	for x in ~/project/saucecharts/src/*; do \
-		ln $$x src/saucecharts/ ; \
-	done
-	rm -rf css/saucecharts
-	mkdir css/saucecharts
-	for x in ~/project/saucecharts/css/*; do \
-		ln $$x css/saucecharts/ ; \
-	done
-
-
-clean:
-	rm -rf flags src css
-
-
-.PHONY: flags echarts saucecharts

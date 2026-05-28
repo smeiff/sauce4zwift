@@ -1,4 +1,9 @@
 
+ifeq ($(OS),Windows_NT)
+  SHELL := cmd.exe
+  .SHELLFLAGS := /s /c
+endif
+
 rwildcard=$(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
 
 ZU_SRCS = $(call rwildcard,../../node_modules/zwift-utils/dist,*.json)
@@ -11,13 +16,13 @@ default: $(ZU_OBJS) $(WORLD_OBJ)
 
 
 $(ZU_OBJS): $(ZU_SRCS) Makefile
-	mkdir -p $(@D)
-	node ../../tools/bin/jsonminify $(patsubst data/%,../../node_modules/zwift-utils/dist/%,$@) $@
+	@if not exist $(@D) cmd /c mkdir $(@D)
+	"C:\Program Files\nodejs\node.exe" ../../tools/bin/jsonminify $(patsubst data/%,../../node_modules/zwift-utils/dist/%,$@) $@
 
 
 $(WORLD_OBJ): $(WORLD_SRC) Makefile
-	mkdir -p $(@D)
-	cp $< $@
+	@if not exist $(@D) cmd /c mkdir $(@D)
+	cmd /c copy "$(subst /,\,$<)" "$(subst /,\,$@)"
 
 
 clean:

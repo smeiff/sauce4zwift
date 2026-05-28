@@ -133,7 +133,7 @@ export function main() {
 
 function buildLayout() {
     const content = document.querySelector('#content');
-    const renderer = new Common.Renderer(content, {
+    const renderer = new Fields.Renderer(content, {
         locked: Common.settingsStore.get('lockedFields'),
         id: 'normal',
     });
@@ -341,9 +341,10 @@ async function renderHotkeys({force}={}) {
         Common.softInnerHTML(el.querySelector('.hotkeys > table > tbody'),
                              `<tr><td colspan="4">No hotkeys configured</td></tr>`);
     }
-    el.querySelector('[name="modifier1"]').innerHTML = manifest.supportedModifiers
-        .filter(x => !x.secondaryOnly)
-        .map(x => `<option value="${x.id}">${Common.stripHTML(x.label)}</option>`)
+    el.querySelector('[name="modifier1"]').innerHTML = [`<option value="">-</option>`]
+        .concat(manifest.supportedModifiers
+            .filter(x => !x.secondaryOnly)
+            .map(x => `<option value="${x.id}">${Common.stripHTML(x.label)}</option>`))
         .join('');
     el.querySelector('[name="modifier2"]').innerHTML = [`<option value="">-</option>`]
         .concat(manifest.supportedModifiers
@@ -352,9 +353,21 @@ async function renderHotkeys({force}={}) {
     el.querySelector('#specialkeys').innerHTML = '<b>Special Keys</b><hr/>' + manifest.specialKeys
         .map(x => `<a href="#">${x.id}</a>${x.help ? ` (${x.help})` : ''}`)
         .join(', ');
-    el.querySelector('[name="action"]').innerHTML = manifest.actions
-        .map(x => `<option value="${x.id}">${Common.stripHTML(x.name)}</option>`)
-        .join('');
+    const selectHTMLs = [];
+    for (const group of new Set(manifest.actions.map(x => x.group))) {
+        if (group) {
+            selectHTMLs.push(`<optgroup label="${Common.sanitizeAttr(group)}">`);
+        }
+        selectHTMLs.push(manifest.actions
+            .filter(x => x.group === group)
+            .toSorted((a, b) => a.id < b.id ? -1 : 1)
+            .map(x => `<option value="${x.id}">${Common.stripHTML(x.name)}</option>`)
+            .join('\n'));
+        if (group) {
+            selectHTMLs.push('</optgroup>');
+        }
+    }
+    el.querySelector('[name="action"]').innerHTML = selectHTMLs.join('\n');
 }
 
 
@@ -768,13 +781,11 @@ export async function settingsMain() {
     extraData.autoLapIntervalUnits = await Common.rpc.getSetting('autoLapMetric') === 'time' ?
         'mins' : 'km';
     const gcs = await Common.rpc.getGameConnectionStatus();
-    if (gcs) {
-        extraData.gameConnectionStatus = gcs.state;
-        Common.subscribe('status', async status => {
-            extraData.gameConnectionStatus = status.state;
-            await appSettingsUpdate(extraData);
-        }, {source: 'gameConnection'});
-    }
+    extraData.gameConnectionState = gcs.state;
+    Common.subscribe('status', async status => {
+        extraData.gameConnectionState = status.state;
+        await appSettingsUpdate(extraData);
+    }, {source: 'gameConnection'});
     Object.assign(extraData, await Common.rpc.getLoaderSettings());
     const forms = document.querySelectorAll('form');
     forms.forEach(x => x.addEventListener('input', async ev => {

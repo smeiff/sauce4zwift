@@ -208,13 +208,14 @@ export class SauceApp extends EventEmitter {
         const gcs = new Zwift.GameConnectionServer({ip, zwiftAPI: this.zwiftAPI});
         const rpcs = ['watch', 'join', 'teleportHome', 'say', 'wave', 'elbow',
             'takePicture', 'powerup', 'changeCamera', 'enableHUD', 'disableHUD', 'chatMessage',
-            'reverse', 'toggleGraphs', 'sendCommands', 'turnLeft', 'turnRight', 'goStraight',
-            'coffeeStop', 'discardPowerUp', 'teleportToAthlete', 'takeVideo'];
+            'reverse', 'toggleGraphs', 'turnLeft', 'turnRight', 'goStraight',
+            'coffeeStop', 'discardPowerUp', 'teleportToAthlete', 'takeVideo', 'getUserActions',
+            'runUserAction', 'expandUserAction', 'collapseUserAction', 'setCamera',
+            'getGameSessionInfo'];
         for (const x of rpcs) {
             RPC.register(gcs[x].bind(gcs), {name: x});
         }
         gcs.start().catch(Report.error);
-        globalThis.gcs = gcs; // XXX DEBUG
         return gcs;
     }
 
@@ -223,7 +224,9 @@ export class SauceApp extends EventEmitter {
     }
 
     getGameConnectionStatus() {
-        return this.gameConnection && this.gameConnection.getStatus();
+        return this.gameConnection ?
+            this.gameConnection.getStatus() :
+            {connected: false, state: 'disabled'};
     }
 
     async start(options) {
@@ -243,21 +246,19 @@ export class SauceApp extends EventEmitter {
             exclusions: options.exclusions,
         }) : undefined;
         let ip;
-        let gameConnection;
         if (this.getSetting('gameConnectionEnabled') && !options.disableGameConnection) {
             ip = ip || await getLocalRoutedIP();
-            gameConnection = this.startGameConnectionServer(ip);
+            this.gameConnection = this.startGameConnectionServer(ip);
             // This isn't required but reduces latency..
-            gameConnection.on('watch-command', id => this.gameMonitor?.setWatching(id));
-            this.gameConnection = gameConnection; // debug
+            this.gameConnection.on('watch-command', id => this.gameMonitor?.setWatching(id));
         }
-        this.rpcEventEmitters.set('gameConnection', gameConnection || new EventEmitter());
+        this.rpcEventEmitters.set('gameConnection', this.gameConnection || new EventEmitter());
         this.statsProc = new StatsProcessor({
             app: this,
             userDataPath: this.appPath,
             zwiftAPI: this.zwiftAPI,
             gameMonitor: this.gameMonitor,
-            gameConnection,
+            gameConnection: this.gameConnection,
             ...options,
         });
         this.statsProc.start();
@@ -274,7 +275,7 @@ export class SauceApp extends EventEmitter {
             'fileReplayStop', 'fileReplayRewind', 'fileReplayForward', 'fileReplayStatus',
             'getIRLMapTile', 'getWorkouts', 'getWorkout', 'getWorkoutCollection',
             'getWorkoutCollections', 'getWorkoutSchedule', 'getZwiftConnectionInfo', 'reconnectZwift',
-            'toggleMarkedAthlete', 'removeFollower',
+            'toggleMarkedAthlete', 'removeFollower', 'getGameState',
             'getAthleteStats' /* DEPRECATED */, 'updateAthleteStats' /* DEPRECATED */,
             'getQueue' /* XXX ambiguous name */
         ];

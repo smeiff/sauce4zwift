@@ -1,5 +1,6 @@
 import * as Locale from '../../shared/sauce/locale.mjs';
 import * as Common from './common.mjs';
+import * as Report from '../../shared/report.mjs';
 
 const H = Locale.human;
 
@@ -39,7 +40,7 @@ export const fieldGroupNames = {
 
 
 function getSport(ad) {
-    return (ad && ad.state && ad.state.sport) || 'cycling';
+    return ad?.state?.sport || 'cycling';
 }
 
 
@@ -52,6 +53,392 @@ function fmtPace(v, ad) {
     const sport = getSport(ad);
     return H.pace(v, {sport, precision: 1});
 }
+
+
+function fGet(fnOrValue, ...args) {
+    try {
+        return (typeof fnOrValue === 'function') ? fnOrValue(...args) : fnOrValue;
+    } catch(e) {
+        console.error('Field callback fn:', e);
+    }
+}
+
+
+export class Renderer {
+    constructor(contentEl, options={}) {
+        this._contentEl = contentEl;
+        this._callbacks = [];
+        this._data;
+        this._nextRender;
+        this._lastRenderTime = 0;
+        this.locked = !!options.locked;
+        this.backgroundRender = options.backgroundRender;
+        contentEl.classList.toggle('unlocked', !this.locked);
+        this.stopping = false;
+        this.fps = options.fps || null,
+        this.id = options.id || window.location.pathname.split('/').at(-1);
+        this.fields = new Map();
+        this.onKeyDownBound = this.onKeyDown.bind(this);
+        if (!this.locked) {
+            document.addEventListener('keydown', this.onKeyDownBound);
+        }
+    }
+
+    setLocked(locked) {
+        this.locked = locked;
+        if (locked) {
+            document.removeEventListener('keydown', this.onKeyDownBound);
+        }
+        this._contentEl.classList.toggle('unlocked', !this.locked);
+    }
+
+    stop() {
+        this.stopping = true;
+        if (!this.locked) {
+            document.removeEventListener('keydown', this.onKeyDownBound);
+        }
+        clearTimeout(this._scheduledRender);
+    }
+
+    onKeyDown(ev) {
+        const dir = {ArrowRight: 1, ArrowLeft: -1}[ev.key];
+        const activeEl = document.activeElement;
+        if (!dir || this.locked || !activeEl || !this._contentEl.contains(activeEl)) {
+            return;
+        }
+        const dataField = activeEl.closest('[data-field]');
+        const mappingId = dataField && dataField.dataset.field;
+        if (mappingId) {
+            this.rotateField(mappingId, dir);
+        }
+    }
+
+    addCallback(cb) {
+        this._callbacks.push(cb);
+    }
+
+    setData(data) {
+        this._data = data;
+    }
+
+    getAdjacentFieldIndex(field, offt=1) {
+        const cur = field.available.indexOf(field.active);
+        if (cur === -1) {
+            return 0;
+        }
+        const adjIdx = (cur + offt) % field.available.length;
+        return adjIdx < 0 ? field.available.length + adjIdx : adjIdx;
+    }
+
+    rotateField(mappingId, dir=1) {
+        if (this.locked) {
+            return;
+        }
+        const field = this.fields.get(mappingId);
+        const idx = this.getAdjacentFieldIndex(field, dir);
+        const id = field.available[idx].id;
+        this.setField(mappingId, id);
+    }
+
+    setField(mappingId, id) {
+        const field = this.fields.get(mappingId);
+        Common.storage.set(field.storageKey, id);
+        console.debug('Switching field mapping', mappingId, id);
+        this._setField(field, id);
+        this.render({force: true});
+    }
+
+    _setField(field, id) {
+        const prevEntry = field.active;
+        if (prevEntry?.inactive) {
+            try {
+                prevEntry.inactive(this, field);
+            } catch(e) {
+                console.error(e);
+            }
+        }
+        const entry = field.active = field.available.find(x => x.id === id);
+        if (entry?.active) {
+            try {
+                entry.active(this, field);
+            } catch(e) {
+                console.error(e);
+            }
+        }
+        this._setFieldTooltip(field);
+    }
+
+    addRotatingFields(spec) {
+        for (const x of spec.fields) {
+            if (!x.shortName && x.key) {
+                console.warn("Migrating deprecated field property key -> shortName", x.id);
+                x.shortName = x.key;
+            }
+            if (!x.suffix && x.unit) {
+                console.warn("Migrating deprecated field property unit -> suffix", x.id);
+                x.suffix = x.unit;
+            }
+            if (!x.format && x.value) {
+                console.warn("Migrating deprecated field property value -> format", x.id);
+                x.format = x.value;
+            }
+            if (!x.version) {
+                x.version = 1;
+            }
+        }
+        for (const mapping of spec.mapping) {
+            const el = (spec.el || this._contentEl).querySelector(`[data-field="${mapping.id}"]`);
+            el.setAttribute('tabindex', 0);
+            const storageKey = `${this.id}-${mapping.id}`;
+            const savedId = Common.storage.get(storageKey);
+            let active;
+            for (const id of [savedId, mapping.default, 0]) {
+                active = typeof id === 'number' ? spec.fields[id] : spec.fields.find(x => x.id === id);
+                if (active) {
+                    break;
+                }
+            }
+            if (savedId !== active.id) {
+                console.warn("Storing updated field ID:", savedId, '->', active.id);
+                Common.storage.set(storageKey, active.id);
+            }
+            const field = {
+                id: mapping.id,
+                el,
+                storageKey,
+                available: spec.fields,
+                valueEl: el.querySelector('.value'),
+                labelEl: el.querySelector('.label'),
+                subLabelEl: el.querySelector('.sub-label'),
+                keyEl: el.querySelector('.key'),
+                unitEl: el.querySelector('.unit'),
+            };
+            this.fields.set(mapping.id, field);
+            this._setField(field, active.id);
+            if (this.locked) {
+                continue;
+            }
+            let anchorEl = el.querySelector('.editing-anchor');
+            if (!anchorEl) {
+                anchorEl = el;
+                el.classList.add('editing-anchor');
+            }
+            const handler = Common.longPressListener(el, 1500, ev => {
+                handler.setPaused(true);
+                const field = this.fields.get(mapping.id);
+                const groups = new Set(field.available.map(x => x.group));
+                const select = document.createElement('select');
+                select.classList.add('rotating-field');
+                for (const group of groups) {
+                    // group can be undefined, this is fine.
+                    let container;
+                    if (group) {
+                        container = document.createElement('optgroup');
+                        container.label = fieldGroupNames[group] || group;
+                    } else {
+                        container = select;
+                    }
+                    for (const x of field.available) {
+                        if (x.group === group) {
+                            const option = document.createElement('option');
+                            if (x.id === field.active.id) {
+                                option.selected = true;
+                            }
+                            option.value = x.id;
+                            let name;
+                            try {
+                                name = Common.stripHTML(fGet(x.longName)) ||
+                                       Common.stripHTML(fGet(x.shortName));
+                            } catch(e) {
+                                name = null;
+                                Report.errorThrottled(e);
+                            }
+                            if (!name) {
+                                console.error(`Field returned invalid 'longName' and/or 'shortName':`, x);
+                            }
+                            option.textContent = name || x.id;
+                            container.append(option);
+                        }
+                    }
+                    if (container !== select) {
+                        select.append(container);
+                    }
+                }
+                const endEditing = () => {
+                    if (!select.isConnected) {
+                        return;
+                    }
+                    el.classList.remove('editing');
+                    select.remove();
+                    handler.setPaused(false);
+                };
+                select.addEventListener('change', () => {
+                    this.setField(mapping.id, select.value);
+                    endEditing();
+                });
+                // Avoid DOM errors caused by DOM manipulation in onblur with microtask..
+                select.addEventListener('blur', () => queueMicrotask(endEditing));
+                el.classList.add('editing');
+                anchorEl.append(select);
+                select.focus();
+            });
+            el.addEventListener('click', ev => {
+                const field = this.fields.get(mapping.id).active;
+                if (!field.click || el.classList.contains('editing')) {
+                    return;
+                }
+                field.click(ev, field);
+            });
+        }
+    }
+
+    _setFieldTooltip(field) {
+        let tooltip;
+        try {
+            tooltip = fGet(field.active?.tooltip, field) ||
+                fGet(field.active?.longName) ||
+                fGet(field.active?.shortName);
+        } catch(e) {
+            console.error("Failed to get tooltip for:", field.id, e);
+        }
+        tooltip ??= '';
+        if (!this.locked) {
+            tooltip += (tooltip ? '\n\n' : '') +
+                'Long click/press to change this field or use the Left/Right keys when focused.';
+        }
+        if (field.el._tooltip !== tooltip) {
+            field.el.title = tooltip;
+            field.el._tooltip = tooltip;
+        }
+    }
+
+    schedAnimationFrame(cb) {
+        if (!this.backgroundRender) {
+            return requestAnimationFrame(cb);
+        } else {
+            return queueMicrotask(cb);
+        }
+    }
+
+    render(options={}) {
+        if (!options.force && this.fps) {
+            const age = Date.now() - (this._lastRender || -Infinity);
+            const minAge = 1000 / this.fps;
+            if (age < minAge - this._lastRenderTime) {
+                if (!this._scheduledRender) {
+                    this._scheduledRender = setTimeout(() => {
+                        this._scheduledRender = null;
+                        this.render();
+                    }, Math.ceil(minAge - age));
+                }
+                return;
+            }
+        }
+        if (!this._nextRender) {
+            if (this._scheduledRender) {
+                clearTimeout(this._scheduledRender);
+                this._scheduledRender = null;
+            }
+            const start = Date.now();
+            this._nextRender = new Promise(resolve => {
+                this.schedAnimationFrame(() => {
+                    if (this.stopping) {
+                        resolve();
+                        return;
+                    }
+                    for (const field of this.fields.values()) {
+                        let value = '';
+                        const options = {};
+                        if (field.unitEl) {
+                            options.suffix = false;
+                        }
+                        let data = this._data;
+                        try {
+                            const d = field.active.get ? field.active.get(this._data) : this._data;
+                            if (field.active.version >= 2) {
+                                data = d;
+                            }
+                            value = fGet(field.active.format, d, options);
+                        } catch(e) {
+                            Report.errorThrottled(e);
+                        }
+                        const candidate = value != null && !Number.isNaN(value) ? value : '';
+                        if (Common.softInnerHTML(field.valueEl, candidate)) {
+                            const width = field.valueEl.textContent.length;
+                            if (field.valueEl._width !== width) {
+                                field.valueEl._width = width;
+                                field.valueEl.classList.toggle('x-wide', width > 2);
+                                field.valueEl.classList.toggle('x2-wide', width > 3);
+                                field.valueEl.classList.toggle('x3-wide', width > 4);
+                                field.valueEl.classList.toggle('x4-wide', width > 6);
+                                field.valueEl.classList.toggle('x5-wide', width > 9);
+                            }
+                        }
+                        if (field.labelEl) {
+                            let labels = '';
+                            try {
+                                labels = field.active.label ? fGet(field.active.label, data) : '';
+                            } catch(e) {
+                                Report.errorThrottled(e);
+                            }
+                            if (Array.isArray(labels)) {
+                                Common.softInnerHTML(field.labelEl, labels[0]);
+                                if (field.subLabelEl) {
+                                    Common.softInnerHTML(field.subLabelEl,
+                                                         labels.length > 1 ? labels[1] : '');
+                                }
+                            } else {
+                                Common.softInnerHTML(field.labelEl, labels);
+                                if (field.subLabelEl) {
+                                    Common.softInnerHTML(field.subLabelEl, '');
+                                }
+                            }
+                        }
+                        if (field.keyEl) {
+                            let key = '';
+                            try {
+                                key = field.active.shortName ? fGet(field.active.shortName, data) : '';
+                            } catch(e) {
+                                Report.errorThrottled(e);
+                            }
+                            Common.softInnerHTML(field.keyEl, key);
+                        }
+                        if (field.unitEl) {
+                            let unit = '';
+                            // Hide unit if there is no value but only if there is no key element too.
+                            const showUnit = field.active.suffix &&
+                                ((value != null && value !== '-') || !field.keyEl);
+                            try {
+                                unit = showUnit ? fGet(field.active.suffix, data) : '';
+                            } catch(e) {
+                                Report.errorThrottled(e);
+                            }
+                            Common.softInnerHTML(field.unitEl, unit);
+                        }
+                        if (typeof field.active.tooltip === 'function') {
+                            this._setFieldTooltip(field);
+                        }
+                    }
+                    for (const cb of this._callbacks) {
+                        try {
+                            cb(this._data);
+                        } catch(e) {
+                            Report.errorThrottled(e);
+                        }
+                    }
+                    resolve();
+                });
+            }).finally(() => {
+                this._lastRender = Date.now();
+                this._lastRenderTime = this._lastRender - start;
+                this._nextRender = null;
+            });
+        }
+        return this._nextRender;
+    }
+}
+globalThis._fields_module_back_compat_Renderer = Renderer;  // XXX during transition for Mods
+
 
 
 const _smoothedIndexes = new Map();
@@ -211,7 +598,7 @@ export function makePeakPowerFields(period, lap, extra) {
 
     function label(ad) {
         const l = [`peak ${duration}`, lapLabel].filter(x => x);
-        if (!ad || !ad.stats) {
+        if (!ad?.stats) {
             return l;
         }
         const peak = getPeak(ad);
@@ -286,24 +673,138 @@ function courseDurationFormat(t, options) {
 }
 
 
+export class PowerUpField {
+
+    static subTypeLabels = {
+        undefined: '',
+        large: ' (Large)',
+        xl: ' (XL)',
+    };
+
+    static titles = {
+        LIGHTNESS: 'Feather',
+        DRAFTBOOST: 'Draft',
+        UNDRAFTABLE: 'Undraftable',
+        AERO: 'Aero',
+        NINJA: 'Ghost',
+        STEAMROLLER: 'Steamroller',
+        ANVIL: 'Anvil',
+        COFFEE_STOP: 'Coffee Stop',
+        BOOST: 'Boost',
+        BONUS_XP: 'XP++',
+        BONUS_XP_LIGHT: 'XP',
+        NONE: 'None',
+    };
+
+    constructor({subType}={}) {
+        this.id = subType ? `powerup-${subType}` : 'powerup';
+        this.subType = subType;
+        this.timer = null;
+        this.format = this.format.bind(this);
+        this.longName = this.longName.bind(this);
+        this.tooltip = this.tooltip.bind(this);
+        this._activeRenderers = new Map();
+        Common.rpc.getGameConnectionStatus().then(status => {
+            this.disabled = status.state === 'disabled';
+            this.unavailable = !status.connected;
+            for (const x of this._activeRenderers.keys()) {
+                x.render();
+            }
+        });
+    }
+
+    active(renderer, field) {
+        const refCnt = (this._activeRenderers.get(renderer) || 0) + 1;
+        this._activeRenderers.set(renderer, refCnt);
+    }
+
+    inactive(renderer, field) {
+        const refCnt = this._activeRenderers.get(renderer) - 1;
+        if (refCnt === 0) {
+            this._activeRenderers.delete(renderer);
+        } else {
+            this._activeRenderers.set(renderer, refCnt);
+        }
+    }
+
+    format(ad) {
+        if (this.disabled) {
+            return '<ms small>mobiledata_off</ms>';
+        }
+        const gs = ad?.gameState;
+        this.unavailable = !gs?.gameConnection;
+        if (gs) {
+            let type, state, timer;
+            if (gs.activePowerUp) {
+                state = 'active';
+                type = gs.activePowerUp;
+                timer = this.timer ?? `${Math.round(gs.activePowerUpEnd - Date.now())}ms`;
+            } else if (gs.availablePowerUp) {
+                state = 'available';
+                type = gs.availablePowerUp;
+            } else {
+                state = 'inactive';
+                type = 'NONE';
+            }
+            this.timer = timer;
+            this.presentingType = type;
+            const style = timer ? `style="--active-timer: ${timer};"` : '';
+            const stCls = this.subType ? `subtype-${this.subType}` : '';
+            return `<div class="field-powerup ${state} ${stCls}" ${style}>
+                <img src="/pages/images/powerups/${type}.svg"/></div>`;
+        } else {
+            this.timer = null;
+            this.presentingType = null;
+            return '-';
+        }
+    }
+
+    shortName(ad) {
+        return !ad?.gameState ? 'PowerUp' : '';
+    }
+
+    longName() {
+        return `PowerUp${this.constructor.subTypeLabels[this.subType]}`;
+    }
+
+    tooltip(field) {
+        if (this.disabled) {
+            return 'Game Connection required for PowerUp field\n\n' +
+                'See: Settings -> General -> Game Connection';
+        } else if (this.unavailable) {
+            return `PowerUp - Unavailable`;
+        } else if (this.presentingType) {
+            return `PowerUp - ${this.constructor.titles[this.presentingType]}`;
+        }
+    }
+
+    click() {
+        if (this.disabled || this.unavailable) {
+            return;
+        }
+        Common.rpc.powerup();
+    }
+}
+
+
 export const timeFields = [{
     id: 'time-active',
     longName: 'Active Time',
     shortName: 'Active',
-    format: x => fmtDur(x.stats && x.stats.activeTime || 0),
+    format: x => fmtDur(x?.stats?.activeTime || 0),
     tooltip: 'Sauce based active time',
 }, {
     id: 'time-elapsed',
     longName: 'Elapsed Time',
     shortName: 'Elapsed',
     miniName: 'Elpsd',
-    format: x => fmtDur(x.stats && x.stats.elapsedTime || 0),
+    format: x => fmtDur(x?.stats?.elapsedTime || 0),
     tooltip: 'Sauce based elapsed time',
 }, {
     id: 'time-session',
     longName: 'Session Time',
     shortName: 'Time',
-    format: x => fmtDur(x.state && x.state.time || 0),
+    format: x => fmtDur(x?.state?.time || 0),
     tooltip: 'Time as reported by the current Zwift session',
 }, {
     id: 'time-gap',
@@ -326,7 +827,7 @@ export const timeFields = [{
 }, {
     id: 'time-coffee',
     longName: 'Coffee Time',
-    get: x => x.stats?.coffeeTime || 0,
+    get: x => x?.stats?.coffeeTime || 0,
     format: fmtDur,
     shortName: 'Coffee',
     miniName: '<ms>coffee</ms>',
@@ -335,7 +836,7 @@ export const timeFields = [{
 }, {
     id: 'time-solo',
     longName: 'Solo Time',
-    get: x => x.stats?.soloTime || 0,
+    get: x => x?.stats?.soloTime || 0,
     format: fmtDur,
     shortName: 'Solo',
     miniName: '<ms>self_improvement</ms>',
@@ -344,7 +845,7 @@ export const timeFields = [{
 }, {
     id: 'time-follow',
     longName: 'Following Time',
-    get: x => x.stats?.followTime || 0,
+    get: x => x?.stats?.followTime || 0,
     format: fmtDur,
     shortName: 'Following',
     label: 'following',
@@ -353,7 +854,7 @@ export const timeFields = [{
 }, {
     id: 'time-work',
     longName: 'Working Time',
-    get: x => x.stats?.workTime || 0,
+    get: x => x?.stats?.workTime || 0,
     format: fmtDur,
     shortName: 'Working',
     miniName: '<ms>group_add</ms>',
@@ -364,18 +865,18 @@ export const timeFields = [{
     longName: 'Pack Time Graph',
     shortName: 'Pack',
     label: 'pack time',
-    format: x => fmtPackTime(x.stats),
+    format: x => fmtPackTime(x?.stats),
     tooltip: 'Pack Time Graph\n\nHow much time has been spent sitting-in vs solo vs working',
 }, {
     id: 'time-lap',
-    format: x => fmtDur(x.lap?.activeTime || 0),
+    format: x => fmtDur(x?.lap?.activeTime || 0),
     longName: 'Time (lap)',
     shortName: 'Lap',
     label: 'lap',
 }, {
     id: 'time-coffee-lap',
     longName: 'Coffee Time (lap)',
-    get: x => x.lap?.coffeeTime || 0,
+    get: x => x?.lap?.coffeeTime || 0,
     format: fmtDur,
     shortName: 'Coffee <ms small>timer</ms>',
     miniName: '<ms>coffee</ms> <ms>timer</ms>',
@@ -384,7 +885,7 @@ export const timeFields = [{
 }, {
     id: 'time-solo-lap',
     longName: 'Solo Time (lap)',
-    get: x => x.lap?.soloTime || 0,
+    get: x => x?.lap?.soloTime || 0,
     format: fmtDur,
     shortName: 'Solo <ms small>timer</ms>',
     miniName: '<ms>self_improvement</ms> <ms small>timer</ms>',
@@ -393,7 +894,7 @@ export const timeFields = [{
 }, {
     id: 'time-follow-lap',
     longName: 'Following Time (lap)',
-    get: x => x.lap?.followTime || 0,
+    get: x => x?.lap?.followTime || 0,
     format: fmtDur,
     shortName: 'Following <ms small>timer</ms>',
     miniName: '<ms>group_remove</ms> <ms small>timer</ms>',
@@ -402,7 +903,7 @@ export const timeFields = [{
 }, {
     id: 'time-work-lap',
     longName: 'Working Time (lap)',
-    get: x => x.lap?.workTime || 0,
+    get: x => x?.lap?.workTime || 0,
     format: fmtDur,
     shortName: 'Working <ms small>timer</ms>',
     miniName: '<ms>group_add</ms> <ms small>timer</ms>',
@@ -412,62 +913,55 @@ export const timeFields = [{
     id: 'time-pack-graph-lap',
     longName: 'Pack Time Graph (lap)',
     shortName: 'Pack <ms small>timer</ms>',
-    format: x => fmtPackTime(x.lap),
+    format: x => fmtPackTime(x?.lap),
     label: ['pack time', '(lap)'],
     tooltip: 'Pack Time Graph\n\nHow much time has been spent sitting-in vs solo vs working (lap)',
 }];
 timeFields.forEach(x => x.group = 'time');
 
 
-export const athleteFields = [{
-    id: 'fullname',
-    format: x => x.athlete && x.athlete.sanitizedFullname || '-',
-    shortName: x => (x && x.athlete) ? '' : 'Athlete Name',
-}, {
-    id: 'flastname',
-    format: x => x.athlete && x.athlete.fLast || '-',
-    shortName: x => (x && x.athlete) ? '' : 'Athlete F.Last',
-}, {
-    id: 'team',
-    format: x => x.athlete && Common.teamBadge(x.athlete.team) || '-',
-    shortName: x => (x && x.athlete && x.athlete.team) ? '' : 'Team',
-}, {
-    id: 'level',
-    format: x => H.number(x.athlete && x.athlete.level),
-    shortName: 'Level',
-}, {
-    id: 'rideons',
-    format: x => H.number(x.state && x.state.rideons),
-    shortName: 'Ride Ons',
-}, {
-    id: 'weight',
-    format: x => H.weightClass(x.athlete && x.athlete.weight, {html: true}),
-    shortName: 'Weight',
-    suffix: () => Locale.isImperial() ? 'lbs' : 'kg',
-}, {
-    id: 'ftp',
-    format: x => H.number(x.athlete && x.athlete.ftp),
-    shortName: 'FTP',
-    suffix: 'w'
-}, {
-    id: 'powerup',
-    format: x => {
-        if (x.state && x.state.activePowerUp) {
-            return `ACTIVE: ${x.state.activePowerUp}`;
-        } else if (x.gameState && x.gameState.availablePowerUp) {
-            return `Available: ${x.gameState.availablePowerUp}`;
-        } else {
-            return '-';
-        }
+export const athleteFields = [
+    {
+        id: 'fullname',
+        format: x => x.athlete && x.athlete.sanitizedFullname || '-',
+        shortName: x => (x && x.athlete) ? '' : 'Athlete Name',
+    }, {
+        id: 'flastname',
+        format: x => x.athlete && x.athlete.fLast || '-',
+        shortName: x => (x && x.athlete) ? '' : 'Athlete F.Last',
+    }, {
+        id: 'team',
+        format: x => x.athlete && Common.teamBadge(x.athlete.team) || '-',
+        shortName: x => (x && x.athlete && x.athlete.team) ? '' : 'Team',
+    }, {
+        id: 'level',
+        format: x => H.number(x.athlete && x.athlete.level),
+        shortName: 'Level',
+    }, {
+        id: 'rideons',
+        format: x => H.number(x?.state?.rideons),
+        shortName: 'Ride Ons',
+    }, {
+        id: 'weight',
+        format: x => H.weightClass(x.athlete && x.athlete.weight, {html: true}),
+        shortName: 'Weight',
+        suffix: () => Locale.isImperial() ? 'lbs' : 'kg',
+    }, {
+        id: 'ftp',
+        format: x => H.number(x.athlete && x.athlete.ftp),
+        shortName: 'FTP',
+        suffix: 'w'
     },
-    shortName: 'PowerUp',
-}];
+    new PowerUpField(),
+    //new PowerUpField({subType: 'large'}),
+    //new PowerUpField({subType: 'xl'}),
+];
 athleteFields.forEach(x => x.group = 'athlete');
 
 
 export const speedFields = [{
     id: 'spd-cur',
-    format: x => fmtPace(x.state && x.state.speed, x),
+    format: x => fmtPace(x?.state?.speed, x),
     shortName: speedLabel,
     suffix: speedUnit,
 }, {
@@ -478,12 +972,12 @@ export const speedFields = [{
     suffix: speedUnit,
 }, {
     id: 'spd-avg',
-    format: x => fmtPace(x.stats && x.stats.speed.avg, x),
+    format: x => fmtPace(x?.stats?.speed.avg, x),
     shortName: x => `${speedLabel(x)}<small> (avg)</small>`,
     suffix: speedUnit,
 }, {
     id: 'spd-lap',
-    format: x => fmtPace(x.lap && x.lap.speed.avg, x),
+    format: x => fmtPace(x?.lap?.speed.avg, x),
     longName: x => `${speedLabel(x)} (lap)`,
     shortName: x => `${speedLabel(x)} <ms small>timer</ms>`,
     suffix: speedUnit,
@@ -493,17 +987,17 @@ speedFields.forEach(x => x.group = 'speed');
 
 export const hrFields = [{
     id: 'hr-cur',
-    format: x => H.number(x.state && x.state.heartrate),
+    format: x => H.number(x?.state?.heartrate),
     shortName: 'HR',
     suffix: 'bpm',
 }, {
     id: 'hr-avg',
-    format: x => H.number(x.stats && x.stats.hr.avg),
+    format: x => H.number(x?.stats?.hr.avg),
     shortName: 'HR<small> (avg)</small>',
     suffix: 'bpm',
 }, {
     id: 'hr-lap',
-    format: x => H.number(x.lap && x.lap.hr.avg),
+    format: x => H.number(x?.lap?.hr.avg),
     longName: 'HR (lap)',
     shortName: 'HR <ms small>timer</ms>',
     suffix: 'bpm',
@@ -543,24 +1037,24 @@ hrFields.forEach(x => x.group = 'hr');
 
 export const powerFields = [{
     id: 'pwr-cur',
-    format: x => H.number(x.state && x.state.power),
+    format: x => H.number(x?.state?.power),
     shortName: `Power`,
     longName: `Current Power`,
     suffix: 'w',
 }, {
     id: 'pwr-cur-wkg',
-    format: x => fmtWkg(x.state && x.state.power, x.athlete),
+    format: x => fmtWkg(x?.state?.power, x.athlete),
     shortName: `W/kg`,
     longName: `Current W/kg`,
 }, {
     id: 'pwr-avg',
-    format: x => H.number(x.stats && x.stats.power.avg),
+    format: x => H.number(x?.stats?.power.avg),
     shortName: 'Power<small> (avg)</small>',
     longName: 'Average Power',
     suffix: 'w',
 }, {
     id: 'pwr-avg-wkg',
-    format: x => fmtWkg(x.stats && x.stats.power.avg, x.athlete),
+    format: x => fmtWkg(x?.stats?.power.avg, x.athlete),
     shortName: 'W/kg<small> (avg)</small>',
     longName: 'Average W/kg',
 },
@@ -571,13 +1065,13 @@ export const powerFields = [{
 ...makeSmoothPowerFields(1200),
 {
     id: 'energy',
-    format: x => H.number(x.state && x.state.kj),
+    format: x => H.number(x?.state?.kj),
     shortName: 'Energy',
     suffix: 'kJ',
 }, {
     id: 'energy-solo',
     longName: 'Solo Energy',
-    get: x => x.stats?.soloKj || 0,
+    get: x => x?.stats?.soloKj || 0,
     format: H.number,
     suffix: 'kJ',
     shortName: 'Solo',
@@ -587,7 +1081,7 @@ export const powerFields = [{
 }, {
     id: 'energy-follow',
     longName: 'Following Energy',
-    get: x => x.stats?.followKj || 0,
+    get: x => x?.stats?.followKj || 0,
     format: H.number,
     suffix: 'kJ',
     shortName: 'Following',
@@ -597,7 +1091,7 @@ export const powerFields = [{
 }, {
     id: 'energy-work',
     longName: 'Working Energy',
-    get: x => x.stats?.workKj || 0,
+    get: x => x?.stats?.workKj || 0,
     format: H.number,
     suffix: 'kJ',
     shortName: 'Working',
@@ -607,7 +1101,7 @@ export const powerFields = [{
 }, {
     id: 'power-avg-solo',
     longName: 'Solo Average Power',
-    get: x => (x.stats?.soloKj / x.stats?.soloTime * 1000) || 0,
+    get: x => (x?.stats?.soloKj / x?.stats?.soloTime * 1000) || 0,
     format: H.power,
     suffix: 'w',
     shortName: 'Solo',
@@ -617,7 +1111,7 @@ export const powerFields = [{
 }, {
     id: 'power-avg-follow',
     longName: 'Following Average Power',
-    get: x => (x.stats?.followKj / x.stats?.followTime * 1000) || 0,
+    get: x => (x?.stats?.followKj / x?.stats?.followTime * 1000) || 0,
     format: H.power,
     suffix: 'w',
     shortName: 'Following',
@@ -627,7 +1121,7 @@ export const powerFields = [{
 }, {
     id: 'power-avg-work',
     longName: 'Working Average Power',
-    get: x => (x.stats?.workKj / x.stats?.workTime * 1000) || 0,
+    get: x => (x?.stats?.workKj / x?.stats?.workTime * 1000) || 0,
     format: H.power,
     suffix: 'w',
     shortName: 'Working',
@@ -643,26 +1137,26 @@ export const powerFields = [{
     suffix: 'kJ',
 }, {
     id: 'tss',
-    format: x => H.number(x.stats && x.stats.power.tss),
+    format: x => H.number(x?.stats?.power.tss),
     shortName: 'TSS<abbr>®</abbr>',
     tooltip: tpAttr,
 }, {
     id: 'pwr-np',
-    format: x => H.number(x.stats && x.stats.power.np),
+    format: x => H.number(x?.stats?.power.np),
     shortName: 'NP<abbr>®</abbr>',
     tooltip: tpAttr,
 }, {
     id: 'pwr-if',
-    format: x => fmtPct((x.stats && x.stats.power.np || 0) / (x.athlete && x.athlete.ftp)),
+    format: x => fmtPct((x?.stats?.power.np || 0) / (x.athlete && x.athlete.ftp)),
     shortName: 'IF<abbr>®</abbr>',
     tooltip: tpAttr,
 }, {
     id: 'pwr-vi',
-    format: x => H.number(x.stats && x.stats.power.np / x.stats.power.avg, {precision: 2, fixed: true}),
+    format: x => H.number(x?.stats?.power.np / x?.stats?.power.avg, {precision: 2, fixed: true}),
     shortName: 'VI',
 }, {
     id: 'pwr-max',
-    format: x => H.number(x.stats && x.stats.power.max),
+    format: x => H.number(x?.stats?.power.max),
     shortName: 'Power<small> (max)</small>',
     suffix: 'w',
 },
@@ -673,19 +1167,19 @@ export const powerFields = [{
 ...makePeakPowerFields(1200),
 {
     id: 'pwr-lap',
-    format: x => H.number(x.lap && x.lap.power.avg),
+    format: x => H.number(x?.lap?.power.avg),
     shortName: 'Power <ms small>timer</ms>',
     longName: 'Average Power (lap)',
     suffix: 'w',
 }, {
     id: 'pwr-lap-wkg',
-    format: x => fmtWkg(x.lap && x.lap.power.avg, x.athlete),
+    format: x => fmtWkg(x?.lap?.power.avg, x.athlete),
     shortName: 'W/kg <ms small>timer</ms>',
     longName: 'Average W/kg (lap)',
 }, {
     id: 'energy-solo-lap',
     longName: 'Solo Energy (lap)',
-    get: x => x.lap?.soloKj || 0,
+    get: x => x?.lap?.soloKj || 0,
     format: H.number,
     suffix: 'kJ',
     shortName: 'Solo <ms small>timer</ms>',
@@ -695,7 +1189,7 @@ export const powerFields = [{
 }, {
     id: 'energy-follow-lap',
     longName: 'Following Energy (lap)',
-    get: x => x.lap?.followKj || 0,
+    get: x => x?.lap?.followKj || 0,
     format: H.number,
     suffix: 'kJ',
     shortName: 'Following <ms small>timer</ms>',
@@ -705,7 +1199,7 @@ export const powerFields = [{
 }, {
     id: 'energy-work-lap',
     longName: 'Working Energy (lap)',
-    get: x => x.lap?.workKj || 0,
+    get: x => x?.lap?.workKj || 0,
     format: H.number,
     suffix: 'kJ',
     shortName: 'Working <ms small>timer</ms>',
@@ -715,7 +1209,7 @@ export const powerFields = [{
 }, {
     id: 'power-avg-solo-lap',
     longName: 'Solo Average Power (lap)',
-    get: x => (x.lap?.soloKj / x.lap?.soloTime * 1000) || 0,
+    get: x => (x?.lap?.soloKj / x?.lap?.soloTime * 1000) || 0,
     format: H.power,
     suffix: 'w',
     shortName: 'Solo <ms small>timer</ms>',
@@ -725,7 +1219,7 @@ export const powerFields = [{
 }, {
     id: 'power-avg-follow-lap',
     longName: 'Following Average Power (lap)',
-    get: x => (x.lap?.followKj / x.lap?.followTime * 1000) || 0,
+    get: x => (x?.lap?.followKj / x?.lap?.followTime * 1000) || 0,
     format: H.power,
     suffix: 'w',
     shortName: 'Following <ms small>timer</ms>',
@@ -735,7 +1229,7 @@ export const powerFields = [{
 }, {
     id: 'power-avg-work-lap',
     longName: 'Working Average Power (lap)',
-    get: x => (x.lap?.workKj / x.lap?.workTime * 1000) || 0,
+    get: x => (x?.lap?.workKj / x?.lap?.workTime * 1000) || 0,
     format: H.power,
     suffix: 'w',
     shortName: 'Working <ms small>timer</ms>',
@@ -754,22 +1248,22 @@ powerFields.forEach(x => x.group = 'power');
 
 export const draftFields = [{
     id: 'draft-cur',
-    format: x => H.power(x.state && x.state.draft),
+    format: x => H.power(x?.state?.draft),
     shortName: 'Draft',
-    suffix: x => H.power(x && x.state && x.state.draft, {suffixOnly: true}),
+    suffix: x => H.power(x?.state?.draft, {suffixOnly: true}),
 }, {
     id: 'draft-avg',
-    format: x => H.power(x.stats && x.stats.draft.avg),
+    format: x => H.power(x?.stats?.draft.avg),
     shortName: 'Draft<small> (avg)</small>',
-    suffix: x => H.power(x && x.stats && x.stats.draft.avg, {suffixOnly: true}),
+    suffix: x => H.power(x?.stats?.draft.avg, {suffixOnly: true}),
 }, {
     id: 'draft-lap',
-    format: x => H.power(x.lap && x.lap.draft.avg),
+    format: x => H.power(x?.lap?.draft.avg),
     shortName: 'Draft <ms small>timer</ms>',
-    suffix: x => H.power(x && x.lap && x.lap.draft.avg, {suffixOnly: true}),
+    suffix: x => H.power(x?.lap?.draft.avg, {suffixOnly: true}),
 }, {
     id: 'draft-energy',
-    format: x => H.number(x.state && x.stats?.draft?.kj),
+    format: x => H.number(x?.stats?.draft?.kj),
     shortName: 'Draft<small> (energy)</small>',
     suffix: 'kJ',
 }];
@@ -778,17 +1272,17 @@ draftFields.forEach(x => x.group = 'draft');
 
 export const cadenceFields = [{
     id: 'cad-cur',
-    format: x => H.number(x.state && x.state.cadence),
+    format: x => H.number(x?.state?.cadence),
     shortName: 'Cadence',
     suffix: x => getSport(x) === 'running' ? 'spm' : 'rpm',
 }, {
     id: 'cad-avg',
-    format: x => H.number(x.stats && x.stats.cadence.avg),
+    format: x => H.number(x?.stats?.cadence.avg),
     shortName: 'Cadence<small> (avg)</small>',
     suffix: x => getSport(x) === 'running' ? 'spm' : 'rpm',
 }, {
     id: 'cad-lap',
-    format: x => H.number(x.lap && x.lap.cadence.avg),
+    format: x => H.number(x?.lap?.cadence.avg),
     shortName: 'Cadence <ms small>timer</ms>',
     suffix: x => getSport(x) === 'running' ? 'spm' : 'rpm',
 }];
@@ -1034,7 +1528,7 @@ export const courseFields = [{
     }
 }, {
     id: 'ev-dst', // legacy id, is essentially ev-progress now
-    format: x => x.state ?
+    format: x => x?.state ?
         x.remainingMetric === 'distance' ?
             `${H.distance(x.remainingEnd - x.remaining, {suffix: true, html: true})}<small> / ` +
                 `${H.distance(x.remainingEnd, {suffix: true, html: true})}</small>` :
@@ -1059,27 +1553,27 @@ export const courseFields = [{
                 '<ms>sports_score</ms>'
 }, {
     id: 'dst',
-    format: x => H.distance(x.state && x.state.distance),
+    format: x => H.distance(x?.state?.distance),
     shortName: 'Dist',
-    suffix: x => H.distance(x && x.state && x.state.distance, {suffixOnly: true}),
+    suffix: x => H.distance(x?.state?.distance, {suffixOnly: true}),
 }, {
     id: 'game-laps',
-    format: x => fmtLap(x.state && x.state.laps + 1),
+    format: x => fmtLap(x?.state ? x.state.laps + 1 : undefined),
     tooltip: 'Zwift route lap number',
     shortName: 'Lap<small> (zwift)</small>',
 }, {
     id: 'sauce-laps',
-    format: x => fmtLap(x.lapCount),
+    format: x => fmtLap(x?.lapCount),
     tooltip: 'Sauce stats lap number',
     shortName: 'Lap<small> (sauce)</small>',
 }, {
     id: 'progress',
-    format: x => fmtPct(x.state && x.state.progress || 0),
+    format: x => fmtPct(x?.state?.progress || 0),
     shortName: 'Progress',
 },{
     id: 'ev-name',
     format: x => {
-        const sg = Common.getEventSubgroup(x.state?.eventSubgroupId);
+        const sg = Common.getEventSubgroup(x?.state?.eventSubgroupId);
         return (sg && !(sg instanceof Promise) && sg.name) ? `${sg.name} <ms>event</ms>` : '-';
     },
     shortName: x => (x?.state?.eventSubgroupId) ? '' : 'Event',
@@ -1087,8 +1581,8 @@ export const courseFields = [{
 }, {
     id: 'rt-name',
     format: x => {
-        const sg = Common.getEventSubgroup(x.state?.eventSubgroupId);
-        const routeId = sg?.routeId || x.state?.routeId;
+        const sg = Common.getEventSubgroup(x?.state?.eventSubgroupId);
+        const routeId = sg?.routeId || x?.state?.routeId;
         const route = routeId && Common.getRoute(routeId);
         if (route && !(route instanceof Promise)) {
             const icon = ' <ms>route</ms>';
@@ -1105,22 +1599,22 @@ export const courseFields = [{
     tooltip: 'Route',
 }, {
     id: 'el-gain',
-    format: x => H.elevation(x.state && x.state.climbing),
+    format: x => H.elevation(x?.state?.climbing),
     shortName: 'Climbed',
-    suffix: x => H.elevation(x && x.state && x.state.climbing, {suffixOnly: true}),
+    suffix: x => H.elevation(x?.state?.climbing, {suffixOnly: true}),
 }, {
     id: 'el-altitude',
-    format: x => H.elevation(x.state && x.state.altitude),
+    format: x => H.elevation(x?.state?.altitude),
     longName: 'Altitude',
     shortName: 'Alt',
-    suffix: x => H.elevation(x && x.state && x.state.altitude, {suffixOnly: true}),
+    suffix: x => H.elevation(x?.state?.altitude, {suffixOnly: true}),
 }, {
     id: 'grade',
-    get: x => x.state?.grade,
+    get: x => x?.state?.grade,
     format: x => fmtPct(x, {precision: 1, fixed: true, html: true}),
     longName: 'Grade',
     shortName: '',
-    suffix: x => x.state?.grade < 0 ? '<ms>downhill_skiing</ms>' : '<ms>altitude</ms>',
+    suffix: x => x?.state?.grade < 0 ? '<ms>downhill_skiing</ms>' : '<ms>altitude</ms>',
     tooltip: 'Grade of terrain in percent of rise'
 },
 new SegmentField({type: 'auto'}),

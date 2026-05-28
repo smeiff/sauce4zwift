@@ -55,20 +55,6 @@ message PlayerState {
     int32 botId = 51;
 }
 
-message SocialAction {
-    int32 from = 1;
-    int32 to = 2;  // 0 if public message
-    int32 actionType = 3;  // always value 1 ?
-    string firstName = 4;
-    string lastName = 5;
-    string message = 6;
-    string avatar = 7;
-    int32 countryCode = 8;
-    int32 flagType = 9;
-    int32 messageGroupType = 10;  // defaults to 1
-    int32 messageGroupId = 11;
-}
-
 message RideOn {
     int32 from = 1;
     int32 to = 2;
@@ -99,7 +85,7 @@ message WorldUpdate {
         PlayerJoinedWorld = 2;
         PlayerLeftWorld = 3;
         RideOn = 4;
-        SocialAction = 5;
+        SocialPlayerAction = 5;
         Event = 6;
         PlayerJoinedEvent = 7;
         PlayerLeftEvent = 8;
@@ -615,16 +601,16 @@ message PlayerProfile {
     string preferredLanguage = 89;
     int32 hairColour = 90;
     int32 facialHairColour = 91;
-    int32 runHeadAccessoryColor = 92;
-    int32 runShirtColor = 93;
-    int32 runShortsColor = 94;
-    int32 runShoeColor = 95;
-    int32 runSockColor = 96;
+    uint32 runHeadAccessoryColor = 92;
+    uint32 runShirtColor = 93;
+    uint32 runShortsColor = 94;
+    uint32 runShoeColor = 95;
+    uint32 runSockColor = 96;
     int32 runGlasses = 97;
-    int32 sockColor = 98;
-    int32 shoeColor = 99;
-    int32 helmetColor = 100;
-    int32 bikeColor = 101;
+    uint32 sockColor = 98;
+    uint32 shoeColor = 99;
+    uint32 helmetColor = 100;
+    uint32 bikeColor = 101;
     int32 bodyAccessory1 = 102;
     int32 bodyAccessory2 = 103;
     int32 playerTypeId = 104;
@@ -974,8 +960,8 @@ message SocialPlayerAction {
     string avatar = 7;
     int32 countryCode = 8;
     FlagType flagType = 9;
-    MessageGroupType groupType = 10;
-    int64 groupId = 11;  // unsure if subgroupid or eventid or irrelevant
+    MessageGroupType messageGroupType = 10;
+    int32 messageEventSubgroupId = 11;
 }
 
 message MobileAlertResponse {
@@ -1207,8 +1193,8 @@ message MappingAnnotationGroup {
 }
 
 message MappingPathPoint {
-    double x = 1;
-    double y = 2;
+    float x = 1;
+    float y = 2;
 }
 
 message MappingPath {
@@ -1222,8 +1208,8 @@ message MappingPath {
 message MappingData {
     repeated MappingAnnotationGroup annotationGroups = 1;
     repeated MappingPath paths = 2;
-    double rideOnBombRadius = 3;
-    double rideOnBombRechargeTime = 4;
+    float rideOnBombRadius = 3;
+    float rideOnBombRechargeTime = 4;
 }
 
 message GameSessionInfo {
@@ -1363,40 +1349,40 @@ message WorkoutInfo {
     int32 workoutHash = 1;
     bytes workoutXML = 2;
     bool skippable = 3;
-    double intensityBiasMin = 4;
-    double intensityBiasMax = 5;
+    float intensityBiasMin = 4;
+    float intensityBiasMax = 5;
     int32 durationType = 6;
     bool disablePowerRounding = 7;
 }
 
 message WorkoutBlockState {
     int32 blockIndex = 1;
-    double starsAwarded = 2;
+    float starsAwarded = 2;
 }
 
 message WorkoutState {
-    double currentProgressValue = 1;
+    float currentProgressValue = 1;
     repeated WorkoutBlockState workoutBlockStates = 2;
     bool isPaused = 3;
     bool isFinished = 4;
     bool isInERGMode = 5;
-    double intensityBias = 6;
+    float intensityBias = 6;
     bool isSmartTrainer = 7;
-    double incline = 8;
-    double currentBlockTime = 9;
-    double currentBlockDistance = 10;
+    float incline = 8;
+    float currentBlockTime = 9;
+    float currentBlockDistance = 10;
 }
 
 message Zone {
-    double low = 1;
-    double tolerance = 2;
-    int32 backgroundColor = 3;
-    int32 textColor = 4;
+    float low = 1;
+    float tolerance = 2;
+    uint32 backgroundColor = 3;
+    uint32 textColor = 4;
 }
 
 message FitnessAttribute {
     int32 type = 1;
-    double referenceValue = 2;
+    float referenceValue = 2;
     repeated Zone zones = 3;
 }
 
@@ -1409,7 +1395,23 @@ message WorkoutActionRequest {
 }
 
 message ClientAction {
-    int32 type = 1;
+    enum Type {
+        UNSET = 0;
+        RIDE_ON_GIVEN = 1;
+        SAVE_ACTIVITY_PREVIEW = 2;
+        SAVE_ACTIVITY_FINAL = 3;
+        DISCARD_ACTIVITY = 4;
+        START_CONNECTED_SESSION = 5;
+        EXIT_GAME = 6;
+        START_ZWIFTING = 7;
+        DISMISS_EXIT_GAME = 8;
+        PROMPT_EXIT_GAME = 9;
+        ACTION_BAR_OPEN = 10;
+        ACTION_BAR_CLOSE = 11;
+        END_CONNECTED_SESSION = 12;
+    }
+
+    Type type = 1;
     int32 athleteId = 2;
     string activityName = 3;
     int32 activityPrivacy = 4;
@@ -1458,8 +1460,8 @@ message BoostModeState {
     int32 type = 1;
     int32 chargeInWatts = 2;
     int32 boostInWatts = 3;
-    double currentBatteryLevel = 4;
-    double nextBatteryLevel = 5;
+    float currentBatteryLevel = 4;
+    float nextBatteryLevel = 5;
 }
 
 message GameAction {
@@ -1494,13 +1496,14 @@ message UserAction {
     bool expandable = 9;
     int32 groupNumber = 10;
     bool longPress = 11;
-    int32 backgroundColor = 12;
-    int32 highlightedColor = 13;
+    uint32 backgroundColor = 12;
+    uint32 highlightedColor = 13;
     int32 style = 14;
     string locDisableMessage = 15;
     string lastSelectedSubActionURI = 16;
     string checkedSubActionURI = 17;
     int32 hideBehavior = 18;
+    string locEmptyMessage = 19;
 }
 
 message UserActionSet {
@@ -1531,11 +1534,17 @@ message UserActionAction {
         COLLAPSE = 2;
         SELECTED = 3;
     }
+
+    enum ActionAckType {
+        ACK_UNSET = 0;
+        ERROR = 1;
+        SUCCESSFUL = 2;
+    }
     
     string userActionURI = 1;
     ActionType type = 2;
     repeated UserActionRunParameter runParameters = 3;
-    int32 acknoledgement = 4;
+    ActionAckType acknowledgement = 4;
 }
 
 message GamePacket {
@@ -1648,8 +1657,8 @@ message GameToCompanionSniffedData {
 
 message MobileAlertOption {
     string title = 1;
-    int32 titleColor = 2;
-    int32 buttonColor = 3;
+    uint32 titleColor = 2;
+    uint32 buttonColor = 3;
 }
 
 message MobileAlert {
@@ -1737,7 +1746,7 @@ message AltPlayerState {
 
 message GameToCompanion {
     int32 seqno = 1;
-    int32 replySeqno = 2;
+    int32 largestCommandSeqno = 2;
     int32 athleteId = 3;
     int32 realm = 4;
     PlayerState playerState = 5;
@@ -1780,7 +1789,7 @@ message SessionInfo {
 message ClientToServer {
     int32 realm = 1;
     int32 athleteId = 2;
-    int64 worldTime = 3;
+    optional int64 worldTime = 3; // hack to allow wire encoding of default value zero.
     int32 seqno = 4;
     int32 lastMessageReceived = 5;
     int64 lastMessageReceivedAt = 6;

@@ -1,5 +1,6 @@
 import * as Sauce from '../../shared/sauce/index.mjs';
 import * as Common from './common.mjs';
+import * as Fields from './fields.mjs';
 import {cssColor, getTheme} from './echarts-sauce-theme.mjs';
 
 Common.enableSentry();
@@ -238,186 +239,183 @@ export async function main() {
     Common.initInteractionListeners();
     Common.setBackground(settings);
     const content = document.querySelector('#content');
-
-    const valueEl = document.getElementById('gauge-value');
-    const fillEl = document.getElementById('gauge-fill');
-    if (fillEl) fillEl.style.display = 'none'; // Old linear progress bar
-
-    const labelEl = document.querySelector('.gauge-label');
-    if (labelEl) labelEl.textContent = config.name;
-
-        const svgNS = "http://www.w3.org/2000/svg";
-        const svg = document.createElementNS(svgNS, "svg");
-        svg.setAttribute("viewBox", "0 0 100 100");
-        svg.style.position = 'absolute';
-        svg.style.top = '50%';
-        svg.style.left = '50%';
-        svg.style.transform = 'translate(-50%, -40%)';
-        svg.style.width = '100%';
-        svg.style.height = '100%';
-        svg.style.zIndex = '-1';
-        svg.style.opacity = '0.6';
-        
-        const uniqueId = Math.random().toString(36).substring(2, 9);
-        const maskId = `progress-mask-${uniqueId}`;
-        const glowId = `glow-${uniqueId}`;
-
-        const defs = document.createElementNS(svgNS, "defs");
-        const mask = document.createElementNS(svgNS, "mask");
-        mask.setAttribute("id", maskId);
-        mask.setAttribute("maskUnits", "userSpaceOnUse");
-        mask.setAttribute("maskContentUnits", "userSpaceOnUse");
-
-        const radius = 36;
-        const circumference = 2 * Math.PI * radius;
-        const arcAngle = 180;
-        const rotation = 90 + (360 - arcAngle) / 2;
-        const arcLength = circumference * (arcAngle / 360);
-
-        const maskCircle = document.createElementNS(svgNS, "circle");
-        maskCircle.setAttribute("cx", "50");
-        maskCircle.setAttribute("cy", "50");
-        maskCircle.setAttribute("r", radius.toString());
-        maskCircle.setAttribute("fill", "none");
-        maskCircle.setAttribute("stroke", "white");
-        maskCircle.setAttribute("stroke-width", "16");
-        maskCircle.setAttribute("transform", `rotate(${rotation} 50 50)`);
-        maskCircle.style.strokeDasharray = `${arcLength}px ${circumference}px`;
-        maskCircle.style.strokeDashoffset = `${arcLength}px`;
-        maskCircle.style.transition = "stroke-dashoffset 0.5s ease-out";
-
-        mask.appendChild(maskCircle);
-
-        const filter = document.createElementNS(svgNS, "filter");
-        filter.setAttribute("id", glowId);
-        const feGaussianBlur = document.createElementNS(svgNS, "feGaussianBlur");
-        feGaussianBlur.setAttribute("stdDeviation", "1.5");
-        feGaussianBlur.setAttribute("result", "coloredBlur");
-        const feMerge = document.createElementNS(svgNS, "feMerge");
-        const feMergeNode1 = document.createElementNS(svgNS, "feMergeNode");
-        feMergeNode1.setAttribute("in", "coloredBlur");
-        const feMergeNode2 = document.createElementNS(svgNS, "feMergeNode");
-        feMergeNode2.setAttribute("in", "SourceGraphic");
-        feMerge.appendChild(feMergeNode1);
-        feMerge.appendChild(feMergeNode2);
-        filter.appendChild(feGaussianBlur);
-        filter.appendChild(feMerge);
-        
-        defs.appendChild(mask);
-        defs.appendChild(filter);
-        svg.appendChild(defs);
-
-        const segments = 30;
-        const gap = 2;
-        const segmentLength = arcLength / segments;
-        const dash = segmentLength - gap;
-        
-        let dashArray = '';
-        for (let i = 0; i < segments - 1; i++) {
-            dashArray += `${dash} ${gap} `;
-        }
-        dashArray += `${dash} ${circumference - arcLength + gap}`;
-
-        const bgCircle = document.createElementNS(svgNS, "circle");
-        bgCircle.setAttribute("cx", "50");
-        bgCircle.setAttribute("cy", "50");
-        bgCircle.setAttribute("r", radius.toString());
-        bgCircle.setAttribute("fill", "none");
-        bgCircle.setAttribute("stroke", "currentColor");
-        bgCircle.setAttribute("stroke-width", "10");
-        bgCircle.setAttribute("stroke-dasharray", dashArray);
-        bgCircle.setAttribute("transform", `rotate(${rotation} 50 50)`);
-        bgCircle.style.opacity = '0.15';
-        svg.appendChild(bgCircle);
-
-        const progressCircle = document.createElementNS(svgNS, "circle");
-        progressCircle.setAttribute("cx", "50");
-        progressCircle.setAttribute("cy", "50");
-        progressCircle.setAttribute("r", radius.toString());
-        progressCircle.setAttribute("fill", "none");
-        progressCircle.setAttribute("stroke", config.color);
-        progressCircle.setAttribute("stroke-width", "10");
-        progressCircle.setAttribute("stroke-dasharray", dashArray);
-        progressCircle.setAttribute("transform", `rotate(${rotation} 50 50)`);
-        progressCircle.style.transition = "stroke 0.5s ease";
-
-        const progressGroup = document.createElementNS(svgNS, "g");
-        progressGroup.setAttribute("mask", `url(#${maskId})`);
-        progressGroup.style.filter = `url(#${glowId})`;
-        progressGroup.appendChild(progressCircle);
-        svg.appendChild(progressGroup);
-
-        if (content) {
-            content.style.position = 'relative';
-            content.style.zIndex = '0';
-            content.appendChild(svg);
-        }
-
-    const renderer = new Common.Renderer(content, {fps: 1 / settings.refreshInterval});
+    const echarts = await import('../deps/src/echarts.mjs');
+    echarts.registerTheme('sauce', getTheme('dynamic'));
+    const gauge = echarts.init(content.querySelector('.gauge'), 'sauce', {renderer: 'svg'});
+    let relSize;
+    const initGauge = () => {
+        // Can't use em for most things on gauges. :(
+        relSize = Math.min(content.clientHeight * 1.20, content.clientWidth) / 600;
+        gauge.setOption({
+            animationDurationUpdate: Math.max(200, Math.min(settings.refreshInterval * 1000, 1000)),
+            animationEasingUpdate: 'linear',
+            visualMap: config.visualMap,
+            graphic: [{
+                elements: [{
+                    left: 'center',
+                    top: 'middle',
+                    type: 'circle',
+                    shape: {
+                        r: 270 * relSize,
+                    },
+                    style: {
+                        shadowColor: cssColor('fg', 1, 2/3),
+                        shadowBlur: 5 * relSize,
+                        fill: {
+                            type: 'linear',
+                            x: 0,
+                            y: 0,
+                            x2: 0,
+                            y2: 1,
+                            colorStops: [{
+                                offset: 0,
+                                color: '#000',
+                            }, {
+                                offset: 0.5,
+                                color: colorAlpha(config.color, 'f'),
+                            }, {
+                                offset: 0.75,
+                                color: config.color,
+                            }, {
+                                offset: 0.75,
+                                color: '#0000'
+                            }, {
+                                offset: 1,
+                                color: '#0000'
+                            }],
+                        },
+                        lineWidth: 0,
+                        opacity: 1 - (settings.gaugeTransparency / 100),
+                    }
+                }]
+            }],
+            series: [{
+                radius: '90%', // fill space
+                splitNumber: config.ticks || 7,
+                name: config.name,
+                type: 'gauge',
+                min: settings.min,
+                max: settings.max,
+                startAngle: 210,
+                endAngle: 330,
+                progress: {
+                    show: true,
+                    width: 60 * relSize,
+                    itemStyle: !config.visualMap ? {
+                        color: config.axisColorBands ? '#fff3' : colorAlpha(config.color, '4'),
+                    } : undefined,
+                },
+                axisLine: {
+                    lineStyle: {
+                        color: defaultAxisColorBands,
+                        width: 60 * relSize,
+                        shadowColor: cssColor('fg', 1, 0.5),
+                        shadowBlur: 8 * relSize,
+                    },
+                },
+                axisTick: {
+                    show: false,
+                },
+                splitLine: {
+                    show: true,
+                    distance: 10 * relSize,
+                    length: 10 * relSize,
+                    lineStyle: {
+                        width: 3 * relSize,
+                    }
+                },
+                axisLabel: {
+                    distance: 70 * relSize,
+                    fontSize: 20 * relSize,
+                    formatter: config.getLabel,
+                    textShadowColor: cssColor('fg', 1, 0.5),
+                    textShadowBlur: 1 * relSize,
+                },
+                pointer: settings.boringMode ? {
+                    // NOTE: Important that all are set so it's not an update
+                    icon: null,
+                    width: 6 * relSize,
+                    length: 180 * relSize,
+                    offsetCenter: [0, 0],
+                    itemStyle: {
+                        color: config.color,
+                        opacity: 0.9,
+                        borderColor: cssColor('fg', 0, 0.9),
+                        borderWidth: 2 * relSize,
+                        shadowColor: cssColor('fg', 1, 0.4),
+                        shadowBlur: 4 * relSize,
+                    },
+                } : {
+                    width: 70 * relSize,
+                    length: 180 * relSize,
+                    icon: 'image://../images/logo_vert_120x320.png',
+                    offsetCenter: [0, '10%'],
+                },
+                anchor: settings.boringMode ? {
+                    showAbove: true,
+                    show: true,
+                    size: 25 * relSize,
+                    itemStyle: {
+                        color: config.color,
+                        borderColor: cssColor('fg', 0, 0.9),
+                        borderWidth: 2 * relSize,
+                        shadowColor: cssColor('fg', 1, 0.5),
+                        shadowBlur: 4 * relSize,
+                    }
+                } : {show: false},
+                detail: {
+                    valueAnimation: true,
+                    formatter: config.detailFormatter,
+                    textShadowColor: cssColor('fg', 1, 0.4),
+                    textShadowBlur: 1 * relSize,
+                    offsetCenter: [0, '32%'],
+                    rich: {
+                        value: {
+                            color: cssColor('fg'),
+                            fontSize: 80 * relSize,
+                            fontWeight: 'bold',
+                            lineHeight: 70 * relSize,
+                        },
+                        unit: {
+                            fontSize: 18 * relSize,
+                            color: cssColor('fg', 0, 0.88),
+                            lineHeight: 16 * relSize,
+                        }
+                    }
+                },
+            }],
+        });
+    };
+    initGauge();
+    const renderer = new Fields.Renderer(content, {fps: 1 / settings.refreshInterval});
     renderer.addCallback(data => {
-        if (!data) return;
-        const val = config.getValue(data);
-        if (val == null) {
-            if (valueEl) {
-                valueEl.textContent = '--';
-                valueEl.style.color = '';
-            }
-            maskCircle.style.strokeDashoffset = `${arcLength}px`;
-            return;
+        const axisColorBands = config.axisColorBands ?
+            data && config.axisColorBands(data) : defaultAxisColorBands;
+        const series = {
+            axisLine: {lineStyle: {color: axisColorBands || defaultAxisColorBands}}
+        };
+        if (data) {
+            series.data = [{
+                name: config.name,
+                title: {
+                    offsetCenter: [0, '-30%'],
+                    color: cssColor('fg', 0, 0.9),
+                    fontSize: 80 * relSize * (1 - (config.name.length / 6) * 0.3),
+                    fontWeight: 700,
+                    textShadowColor: cssColor('fg', 1, 0.4),
+                    textShadowBlur: 2 * relSize,
+                },
+                value: config.getValue(data),
+            }];
         }
-        
-        let textVal = '';
-        let unitVal = '';
-        if (type === 'power') {
-            textVal = H.number(val);
-            unitVal = 'w';
-        } else if (type === 'pace') {
-            if (sport === 'cycling') {
-                const speed = Common.imperialUnits ? val / 1.609344 : val;
-                textVal = H.number(speed, {precision: 1});
-                unitVal = Common.imperialUnits ? 'mph' : 'kph';
-            } else {
-                textVal = H.pace(val, {precision: 1, sport});
-                unitVal = Common.imperialUnits ? '/mi' : '/km';
-            }
-        } else if (type === 'wbal') {
-            textVal = H.number((val / 100) * _wPrime / 1000, {precision: 1});
-            unitVal = 'kJ';
-        } else if (type === 'hr') {
-            textVal = H.number(val);
-            unitVal = 'bpm';
-        } else if (type === 'cadence') {
-            textVal = H.number(val);
-            unitVal = 'rpm';
-        } else if (type === 'draft') {
-            textVal = H.number(val);
-            unitVal = 'w';
-        } else {
-            textVal = H.number(val);
-        }
-        
-        if (valueEl) {
-            valueEl.innerHTML = `${textVal}<span style="font-size: 0.4em; opacity: 0.8; margin-left: 2px;">${unitVal}</span>`;
-            if (config.getTextColor) {
-                const color = config.getTextColor(val, data);
-                if (color) {
-                    valueEl.style.color = color;
-                } else {
-                    valueEl.style.color = '';
-                }
-            }
-        }
-        
-        const min = settings.min || 0;
-        const max = settings.max || 100;
-        const pct = Math.max(0, Math.min(1, (val - min) / (max - min)));
-
-        maskCircle.style.strokeDashoffset = `${arcLength - (pct * arcLength)}px`;
-        progressCircle.setAttribute("stroke", config.color);
+        gauge.setOption({series: [series]});
     });
     addEventListener('resize', () => {
+        initGauge();
+        gauge.resize();
         renderer.render({force: true});
     });
+    let reanimateTimeout;
     settingsStore.addEventListener('set', ev => {
         const key = ev.data.key;
         if (key === 'color' || key === 'colorOverride') {
@@ -425,13 +423,16 @@ export async function main() {
         }
         Common.setBackground(settings);
         renderer.fps = 1 / settings.refreshInterval;
+        initGauge();
+        gauge.setOption({series: [{animation: false}]});
         renderer.render({force: true});
+        clearTimeout(reanimateTimeout);
+        reanimateTimeout = setTimeout(() => gauge.setOption({series: [{animation: true}]}), 400);
     });
     Common.subscribe('athlete/watching', watching => {
         sport = watching.state.sport;
         if (type === 'pace') {
             config.name = sport === 'running' ? 'Pace' : 'Speed';
-            if (labelEl) labelEl.textContent = config.name;
         }
         renderer.setData(watching);
         renderer.render();

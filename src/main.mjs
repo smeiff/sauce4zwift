@@ -27,8 +27,8 @@ const isDEV = !Electron.app.isPackaged;
 const defaultUpdateChannel = pkg.version.match(/alpha/) ? 'alpha' :
     pkg.version.match(/beta/) ?  'beta' : 'stable';
 const updateChannelLevels = {stable: 10, beta: 20, alpha: 30};
-const serialCache = new WeakMap();
 const windowEventSubs = new WeakMap();
+const rpcDelegations = new Map();
 
 let startupDialog;
 
@@ -195,6 +195,17 @@ Electron.app.on('second-instance', (ev,_, __, {type, ...args}) => {
 Electron.app.on('before-quit', () => void (quiting = true));
 
 
+function rpcDelegationRemoveSubscription(sub) {
+    const delegation = rpcDelegations.get(sub.delegationKey);
+    delegation.subscriptions.splice(delegation.subscriptions.indexOf(sub), 1);
+    if (!delegation.subscriptions.length) {
+        sauceApp.rpcEventEmitters.unsubscribe(sub.source, sub.event, delegation.delegationCallback,
+                                              sub.options);
+        rpcDelegations.delete(sub.delegationKey);
+    }
+}
+
+
 function monitorWindowForEventSubs(win, subs) {
     // NOTE: MacOS emits show/hide AND restore/minimize but Windows only does restore/minimize
     const resumeEvents = ['responsive', 'show', 'restore'];
@@ -204,8 +215,7 @@ function monitorWindowForEventSubs(win, subs) {
     const resume = (who) => {
         for (const x of subs) {
             if (x.suspended) {
-                console.debug("Resume subscription:", x.event, win.ident(), who);
-                sauceApp.rpcEventEmitters.subscribe(x.source, x.event, x.callback, x.options);
+                console.debug("Resumed subscription:", x.event, win.ident(), who);
                 x.suspended = false;
             }
         }
@@ -213,20 +223,17 @@ function monitorWindowForEventSubs(win, subs) {
     const suspend = (who) => {
         for (const x of subs) {
             if (!x.suspended && !x.persistent) {
-                console.debug("Suspending subscription:", x.event, win.ident(), who);
-                sauceApp.rpcEventEmitters.unsubscribe(x.source, x.event, x.callback, x.options);
+                console.debug("Suspended subscription:", x.event, win.ident(), who);
                 x.suspended = true;
             }
         }
     };
     const shutdown = () => {
         windowEventSubs.delete(win);
-        for (const x of subs) {
-            if (!x.suspended) {
-                sauceApp.rpcEventEmitters.unsubscribe(x.source, x.event, x.callback, x.options);
-            }
+        for (const sub of subs) {
+            rpcDelegationRemoveSubscription(sub);
             // Must be after unsubscribe() because of logs source which eats its own tail otherwise.
-            console.debug("Shutdown subscription:", x.event, win.ident());
+            console.debug("Shutdown subscription:", sub.event, win.ident());
         }
         if (!win.isDestroyed()) {
             for (const x of shutdownEvents) {
@@ -256,7 +263,7 @@ function monitorWindowForEventSubs(win, subs) {
 }
 
 
-let _ipcSubIdInc = 1;
+let _rpcSubIdInc = 1;
 Electron.ipcMain.handle('subscribe', (ev, {event, persistent, source='stats', options}) => {
     const win = ev.sender.getOwnerBrowserWindow();
     if (!sauceApp.rpcEventEmitters.has(source)) {
@@ -265,14 +272,16 @@ Electron.ipcMain.handle('subscribe', (ev, {event, persistent, source='stats', op
     const ch = new Electron.MessageChannelMain();
     const ourPort = ch.port1;
     const theirPort = ch.port2;
-    // Using JSON is a massive win for CPU and memory.
-    const callback = data => {
-        let json = serialCache.get(data);
-        if (!json) {
+    const delegationKey = JSON.stringify({event, source, options});
+    if (!rpcDelegations.has(delegationKey)) {
+        const subscriptions = [];
+        const delegationCallback = function(data) {
             if (data === undefined) {
                 console.warn("Converting undefined to null: prevent this at the emitter source");
                 data = null;
             }
+            // Using JSON is a massive win for CPU and memory.
+            let json;
             try {
                 json = JSON.stringify(data, (key, value) => {
                     if (typeof value === 'bigint') {
@@ -284,14 +293,34 @@ Electron.ipcMain.handle('subscribe', (ev, {event, persistent, source='stats', op
                 console.error("Failed to serialize data for IPC:", e, data);
                 return;
             }
-            if (data != null && typeof data === 'object') {
-                serialCache.set(data, json);
+            for (let i = 0; i < subscriptions.length; i++) {
+                if (subscriptions[i].suspended) {
+                    continue;
+                }
+                try {
+                    subscriptions[i].callback(json);
+                } catch(e) {
+                    queueMicrotask(() => {throw e;});
+                }
             }
-        }
-        ourPort.postMessage(json);
-    };
-    const subId = _ipcSubIdInc++;
-    const sub = {subId, event, source, persistent, options, callback};
+        };
+        rpcDelegations.set(delegationKey, {
+            delegationCallback,
+            subscriptions,
+        });
+        sauceApp.rpcEventEmitters.subscribe(source, event, delegationCallback, options);
+    }
+    const suspended = !(persistent || (win.isVisible() && !win.isMinimized()));
+    if (!suspended) {
+        console.debug("Startup subscription:", event, win.ident());
+    } else {
+        console.debug("Added suspended subscription:", event, win.ident());
+    }
+    const subId = _rpcSubIdInc++;
+    const delegation = rpcDelegations.get(delegationKey);
+    const callback = serialized => ourPort.postMessage(serialized);
+    const sub = {subId, event, source, persistent, options, callback, suspended, delegationKey};
+    delegation.subscriptions.push(sub);
     let subs = windowEventSubs.get(win);
     if (subs) {
         subs.push(sub);
@@ -299,12 +328,6 @@ Electron.ipcMain.handle('subscribe', (ev, {event, persistent, source='stats', op
         subs = [sub];
         windowEventSubs.set(win, subs);
         monitorWindowForEventSubs(win, subs);
-    }
-    if (persistent || (win.isVisible() && !win.isMinimized())) {
-        console.debug("Startup subscription:", event, win.ident());
-        sauceApp.rpcEventEmitters.subscribe(source, event, callback, options);
-    } else {
-        console.debug("Added suspended subscription:", event, win.ident());
     }
     ev.sender.postMessage('subscribe-port', subId, [theirPort]);
     return subId;
@@ -320,9 +343,9 @@ Electron.ipcMain.handle('unsubscribe', (ev, {subId}) => {
     if (idx === -1) {
         return;
     }
-    const {source, event, callback, options} = subs.splice(idx, 1)[0];
-    console.debug("Remove subscription:", event, win.ident());
-    sauceApp.rpcEventEmitters.unsubscribe(source, event, callback, options);
+    const sub = subs.splice(idx, 1)[0];
+    rpcDelegationRemoveSubscription(sub);
+    console.debug("Removed subscription:", sub.event, win.ident());
 });
 Electron.ipcMain.handle('rpc', (ev, name, ...args) =>
     RPC.invoke.call(ev.sender, name, ...args).then(JSON.stringify));
@@ -374,6 +397,10 @@ async function checkForUpdates(channel) {
 
 
 class ElectronSauceApp extends App.SauceApp {
+
+    static _mappedGameConnectionHotkeyActions = new Set();
+    ignoredUserActionHotkeyURIs = /^(teleport|event|navigation|e_bike)/;
+
     getAppMetrics() {
         return Electron.app.getAppMetrics();
     }
@@ -414,11 +441,13 @@ class ElectronSauceApp extends App.SauceApp {
         await super.start(options);
         Hotkeys.registerAction({
             id: 'statsproc-start-lap',
+            group: 'Stats',
             name: 'Trigger Lap',
             callback: () => this.statsProc.startLap()
         });
         Hotkeys.registerAction({
             id: 'statsproc-reset-stats',
+            group: 'Stats',
             name: 'Reset Stats',
             callback: () => this.statsProc.resetStats()
         });
@@ -430,6 +459,51 @@ class ElectronSauceApp extends App.SauceApp {
                     'This is usually an indicator that your Monitor Login is not the correct one. ' +
                     'Go to the main settings panel and logout if it is incorrect.');
             });
+        }
+        if (this.gameConnection) {
+            this.gameConnection.on('user-actions-set', ev => {
+                if (ev.type === 'UPDATE' &&
+                    ev.userActions.every(x => x.uri.match(this.ignoredUserActionHotkeyURIs))) {
+                    return;
+                }
+                this.expandGameConnectionHotkeys();
+            });
+            this.expandGameConnectionHotkeys();
+        }
+    }
+
+    expandGameConnectionHotkeys() {
+        // Only expand hotkey actions, to avoid jank in the UI.
+        const userActions = this.gameConnection.getUserActions();
+        for (const x of userActions) {
+            if (this.constructor._mappedGameConnectionHotkeyActions.has(x.uri) ||
+                x.expandable ||
+                x.uri.match(this.ignoredUserActionHotkeyURIs)) {
+                continue;
+            }
+            if (!x.locTitle) {
+                console.warn('User action without title:', x);
+            }
+            const group = x.parentURI && userActions.find(xx => xx.uri === x.parentURI)?.locTitle;
+            const hotkeyAction = {
+                id: `game-connection-user-action-${x.uri}`,
+                group: group ? `Game Connection - ${group}` : 'Game Connection',
+                name: x.locTitle || x.uri,
+                callback: () => this.onHotkey(x.uri),
+            };
+            this.constructor._mappedGameConnectionHotkeyActions.add(x.uri);
+            Hotkeys.registerAction(hotkeyAction);
+        }
+    }
+
+    onHotkey(uri) {
+        const action = this.gameConnection.getUserActions().find(x => x.uri === uri);
+        if (!action) {
+            console.error('Game Connection Hotkey is not available:', uri);
+        } else if (!action.enabled) {
+            console.warn('Game Connection Hotkey is not enabled:', uri);
+        } else {
+            this.gameConnection.runUserAction(uri);
         }
     }
 }

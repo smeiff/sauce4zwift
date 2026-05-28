@@ -906,10 +906,10 @@ export class StatsProcessor extends Events.EventEmitter {
             const gc = options.gameConnection;
             gc.on('status', ({connected}) => this.onGameConnectionStatusChange(connected));
             gc.on('game-session', this.onGameSession.bind(this));
+            gc.on('powerup-set', this.onPowerupSet.bind(this));
             gc.on('powerup-activate', this.onPowerupActivate.bind(this));
             gc.on('powerup-clear', this.onPowerupClear.bind(this));
-            gc.on('powerup-set', this.onPowerupSet.bind(this));
-            gc.on('custom-action-button', this.onCustomActionButton.bind(this));
+            gc.on('social-action', this.onGameConnectionSocialAction.bind(this));
         }
         if (options.debugGameFields) {
             this._formatState = this._formatStateDebug;
@@ -1252,13 +1252,21 @@ export class StatsProcessor extends Events.EventEmitter {
         })) : Sauce.power.cogganZones(ftp);
     }
 
+    getGameState() {
+        return this._gameState;
+    }
+
     _updateGameState(obj) {
         Object.assign(this._gameState, obj);
         this.emit('game-state', this._gameState);
     }
 
     onGameConnectionStatusChange(connected) {
-        this._updateGameState({gameConnection: connected});
+        const updates = {gameConnection: connected};
+        if (!connected) {
+            updates.availablePowerUp = updates.activePowerUp = updates.activePowerUpEnd = null;
+        }
+        this._updateGameState(updates);
     }
 
     onGameSession(packet) {
@@ -1266,25 +1274,62 @@ export class StatsProcessor extends Events.EventEmitter {
         this._updateGameState({gameVersion: packet.gameVersion});
     }
 
-    onPowerupSet({powerUpType}) {
-        console.debug('PowerUp set:', powerUpType);
-        this._updateGameState({availablePowerUp: powerUpType});
+    onPowerupSet({powerUpType, powerUpSeqno}) {
+        console.info('PowerUp set:', powerUpType);
+        this._updateGameState({
+            availablePowerUp: powerUpType,
+            availablePowerUpSeqno: powerUpSeqno,
+        });
+    }
+
+    onGameConnectionSocialAction(action, wt) {
+        this.handleSocialAction(action, wt);
     }
 
     onPowerupActivate(details) {
-        console.debug('PowerUp activate:', this._gameState.availablePowerUp);
-        this._updateGameState({availablePowerUp: null});
+        if (details.powerUpTimer) {
+            console.info('PowerUp activate:', details.powerUpType, details.powerUpTimer, 'seconds');
+            const end = Date.now() + details.powerUpTimer * 1000;
+            const seqno = this._gameState.availablePowerUpSeqno;
+            this._updateGameState({
+                availablePowerUp: null,
+                availablePowerUpSeqno: null,
+                activePowerUp: details.powerUpType,
+                activePowerUpEnd: end,
+                activePowerUpSeqno: seqno,
+            });
+            // Because the game connection can get partitioned at any point, and I don't
+            // fully trust the game to reliably clear our powerup states for us, setup a
+            // cleanup routine..
+            if (seqno != null) {
+                setTimeout(() => {
+                    if (this._gameState.activePowerUpSeqno === seqno) {
+                        console.warn("Internal cleanup of active powerup state was required");
+                        this.onPowerupDeactivate();
+                    }
+                }, details.powerUpTimer * 1000 + 1000);
+            } else {
+                console.error("Internal powerup state machine error:", 'seqno unset');
+            }
+        } else {
+            console.info(`PowerUp tossed:`, details.powerUpType);
+            this._updateGameState({
+                availablePowerUp: null,
+                availablePowerUpSeqno: null,
+                activePowerUp: null,
+                activePowerUpEnd: null,
+                activePowerUpSeqno: null,
+            });
+        }
     }
 
     onPowerupClear() {
         console.debug('PowerUp cleared');
-        this._updateGameState({availablePowerUp: null});
-    }
-
-    onCustomActionButton(info, command) {
-        const buttons = this._gameState.buttons || {};
-        buttons[info.button] = info.state;
-        this._updateGameState({buttons});
+        this._updateGameState({
+            activePowerUp: null,
+            activePowerUpEnd: null,
+            activePowerUpSeqno: null,
+        });
     }
 
     getCachedEvent(id) {
@@ -2460,9 +2505,9 @@ export class StatsProcessor extends Events.EventEmitter {
                     if (ad?.eventSubgroup) {
                         this._endAthleteSession(ad);
                     }
-                } else if (x.payloadType === 'SocialAction') {
-                    const ts = x.ts / 1000;
-                    this.handleSocialAction(x.payload, ts);
+                } else if (x.payloadType === 'SocialPlayerAction') {
+                    const wt = x.payloadWorldTime;
+                    this.handleSocialAction(x.payload, wt);
                 } else if (x.payloadType === 'RideOn') {
                     this.handleRideOn(x.payload);
                 } else if (x.payloadType === 'Event') {
@@ -2527,7 +2572,7 @@ export class StatsProcessor extends Events.EventEmitter {
 
     _schedStatesEmit() {
         if (this._pendingEgressStates.size && !this._timeoutEgressStates) {
-            const delay = this._emitStatesMinRefresh - (monotonic() - this._lastEgressStates);
+            const delay = Math.max(0, this._emitStatesMinRefresh - (monotonic() - this._lastEgressStates));
             this._timeoutEgressStates = setTimeout(() => this._flushPendingEgressStates(), delay);
         }
     }
@@ -2558,29 +2603,42 @@ export class StatsProcessor extends Events.EventEmitter {
         console.debug("RideOn:", payload);
     }
 
-    handleSocialAction(payload, ts) {
-        if (this.exclusions.has(Zwift.getIDHash(payload.from))) {
+    handleSocialAction(action, wt) {
+        if (this.exclusions.has(Zwift.getIDHash(action.athleteId))) {
+            return;
+        }
+        const ts = worldTimer.toServerTime(wt);
+        if (action.type !== 'TEXT_MESSAGE') {
+            debugger;
             return;
         }
         for (let i = 0; i < this._chatHistory.length && i < 10; i++) {
             const x = this._chatHistory[i];
-            if (x.ts === ts && x.from === payload.from) {
-                console.warn("Deduping chat message:", ts, payload.from, payload.message);
-                return;
-            } else if (x.from === payload.from && x.message === payload.message &&
-                       payload.ts - x.ts < 5000) {
-                console.warn("Deduping chat message (content based):", ts, payload.from, payload.message);
-                return;
+            if (x.from === action.athleteId) {
+                if (Math.abs(x.ts - ts) < 2000 && x.message === action.message) {
+                    //console.debug("Deduping chat message:", ts, action.athleteId, action.message);
+                    return;
+                }
+                break;
             }
         }
-        const athlete = this._loadAthlete(payload.from);
-        const chat = {...payload, ts};
-        const sg = chat.eventSubgroup && this._recentEventSubgroups.get(chat.eventSubgroup);
+        const athlete = this._loadAthlete(action.athleteId);
+        const chat = {
+            from: action.athleteId,
+            to: action.toAthleteId,
+            message: action.message,
+            firstName: action.firstName,
+            lastName: action.lastName,
+            avatar: action.avatar,
+            ts
+        };
+        const sg = action.messageEventSubgroupId &&
+            this._recentEventSubgroups.get(action.messageEventSubgroupId);
         if (sg) {
-            if (sg.invitedLeaders && sg.invitedLeaders.includes(chat.from)) {
+            if (sg.invitedLeaders && sg.invitedLeaders.includes(action.athleteId)) {
                 chat.eventLeader = true;
             }
-            if (sg.invitedSweepers && sg.invitedSweepers.includes(chat.from)) {
+            if (sg.invitedSweepers && sg.invitedSweepers.includes(action.athleteId)) {
                 chat.eventSweeper = true;
             }
         }
@@ -2595,7 +2653,7 @@ export class StatsProcessor extends Events.EventEmitter {
             });
         }
         const name = `${chat.firstName || ''} ${chat.lastName || ''}`;
-        console.debug(`Chat from ${name} [id: ${chat.from}, event: ${chat.eventSubgroup}]:`, chat.message);
+        console.debug(`Chat from ${name} [id: ${chat.from}]:`, chat.message);
         this._chatHistory.unshift(chat);
         if (this._chatHistory.length > 1000) {
             this._chatHistory.length = 1000;
@@ -2841,6 +2899,7 @@ export class StatsProcessor extends Events.EventEmitter {
             internalUpdated: now,
             internalAccessed: now,
             wtOffset: state.worldTime,
+            stateWorldTime: state.worldTime,
             distanceOffset: 0,
             eventPrivacy: {},
             mostRecentState: null,
@@ -2882,6 +2941,7 @@ export class StatsProcessor extends Events.EventEmitter {
         // We also don't handle event clearing here because it needs special
         // handling for auto-reset on event start.
         const created = worldTimer.toLocalTime(wtOffset);
+        // XXX Should we clear mostRecentState?
         Object.assign(ad, {
             created,
             updated: created,
@@ -3100,16 +3160,16 @@ export class StatsProcessor extends Events.EventEmitter {
     }
 
     _preprocessState(state, ad, now) {
+        const elapsed = state.worldTime - ad.stateWorldTime;
+        if (elapsed < 0) {
+            this._stateStaleCount++;
+            return false;
+        } else if (elapsed === 0) {
+            this._stateDupCount++;
+            return false;
+        }
         const prevState = ad.mostRecentState;
         if (prevState) {
-            const elapsed = state.worldTime - prevState.worldTime;
-            if (elapsed < 0) {
-                this._stateStaleCount++;
-                return false;
-            } else if (elapsed === 0) {
-                this._stateDupCount++;
-                return false;
-            }
             if (prevState.sport !== state.sport || prevState.courseId !== state.courseId ||
                 state.distance < prevState.distance) {
                 ad.sport = state.sport;
@@ -3450,40 +3510,36 @@ export class StatsProcessor extends Events.EventEmitter {
             }
         }
         ad.mostRecentState = state;
+        ad.stateWorldTime = state.worldTime;
         ad.updated = worldTimer.toLocalTime(state.worldTime);
         ad.internalUpdated = ad.internalAccessed = now;
         this._stateProcessCount++;
 
-        let emitData;
-        let streamsData;
-        if (this.watchingId === state.athleteId) {
+        let ead, esd;
+        if (ad.athleteId === this.watchingId) {
             if (this.listenerCount('athlete/watching')) {
-                this.emit('athlete/watching', emitData || (emitData = this._formatAthleteData(ad, now)));
+                this.emit('athlete/watching', ead || (ead = this._formatAthleteData(ad, now)));
             }
             this._adV2Emitter.emit(`athlete/watching/v2`, q => this._formatAthleteDataV2(ad, q, now));
             if (addCount && this.listenerCount('streams/watching')) {
-                this.emit('streams/watching',
-                          streamsData || (streamsData = this._getAthleteStreams(ad, -addCount)));
+                this.emit('streams/watching', esd || (esd = this._getAthleteStreams(ad, -addCount)));
             }
         }
-        if (this.athleteId === state.athleteId) {
+        if (ad.athleteId === this.athleteId) {
             if (this.listenerCount('athlete/self')) {
-                this.emit('athlete/self', emitData || (emitData = this._formatAthleteData(ad, now)));
+                this.emit('athlete/self', ead || (ead = this._formatAthleteData(ad, now)));
             }
             this._adV2Emitter.emit(`athlete/self/v2`, q => this._formatAthleteDataV2(ad, q, now));
             if (addCount && this.listenerCount('streams/self')) {
-                this.emit('streams/self',
-                          streamsData || (streamsData = this._getAthleteStreams(ad, -addCount)));
+                this.emit('streams/self', esd || (esd = this._getAthleteStreams(ad, -addCount)));
             }
         }
-        if (this.listenerCount(`athlete/${state.athleteId}`)) {
-            this.emit(`athlete/${state.athleteId}`,
-                      emitData || (emitData = this._formatAthleteData(ad, now)));
+        if (this.listenerCount(`athlete/${ad.athleteId}`)) {
+            this.emit(`athlete/${ad.athleteId}`, ead || this._formatAthleteData(ad, now));
         }
-        this._adV2Emitter.emit(`athlete/${state.athleteId}/v2`, q => this._formatAthleteDataV2(ad, q, now));
-        if (addCount && this.listenerCount(`streams/${state.athleteId}`)) {
-            this.emit(`streams/${state.athleteId}`, streamsData ||
-                      (streamsData = this._getAthleteStreams(ad, -addCount)));
+        this._adV2Emitter.emit(`athlete/${ad.athleteId}/v2`, q => this._formatAthleteDataV2(ad, q, now));
+        if (addCount && this.listenerCount(`streams/${ad.athleteId}`)) {
+            this.emit(`streams/${ad.athleteId}`, esd || this._getAthleteStreams(ad, -addCount));
         }
     }
 
@@ -3569,7 +3625,8 @@ export class StatsProcessor extends Events.EventEmitter {
             this.resetAthletesDB();
         }
         this._statesJob = this._statesProcessor();
-        this._gcInterval = setInterval(this.gcAthleteData.bind(this), 62768);
+        this._gcInterval = setInterval(this._gcAthleteData.bind(this), 62768);
+        this._staleDataCleanupInterval = setInterval(this._staleDataCleanup.bind(this), 7349);
         if (this.gameMonitor) {
             this.gameMonitor.on('inPacket', this.onIncoming.bind(this));
             this.gameMonitor.on('watching-athlete', this.setWatching.bind(this));
@@ -3725,7 +3782,7 @@ export class StatsProcessor extends Events.EventEmitter {
             !event.eventSubgroups?.some(x => x.rulesSet.includes('ALLOWS_LATE_JOIN'))) {
             event.lateJoinInMinutes = undefined;
             if (!this._recentEvents.has(event.id)) {
-                console.warn('Removing erroneous late-join parameter from event:', event);
+                console.debug('Removing erroneous late-join parameter from event:', event.id, event.name);
             }
         }
         this._recentEvents.set(event.id, event);
@@ -4091,10 +4148,10 @@ export class StatsProcessor extends Events.EventEmitter {
         return rDist <= lDist ? right : left;
     }
 
-    gcAthleteData() {
+    _gcAthleteData() {
         const now = monotonic();
-        const expiration = now - 3600 * 1000;
-        for (const [id, {internalAccessed}] of this._athleteData) {
+        const expiration = now - 3600_000;
+        for (const {0: id, 1: {internalAccessed}} of this._athleteData) {
             if (internalAccessed < expiration) {
                 this._athleteData.delete(id);
                 this._athletesCache.delete(id);
@@ -4102,7 +4159,7 @@ export class StatsProcessor extends Events.EventEmitter {
             }
         }
         for (const gm of this._groupMetas.values()) {
-            if (now - gm.accessed > 90 * 1000) {
+            if (now - gm.accessed > 90_000) {
                 for (const aId of gm.identitySet) {
                     const ad = this._athleteData.get(aId);
                     if (ad && ad.groupId === gm.id) {
@@ -4110,6 +4167,33 @@ export class StatsProcessor extends Events.EventEmitter {
                     }
                 }
                 this._groupMetas.delete(gm.id);
+            }
+        }
+    }
+
+    _staleDataCleanup() {
+        const now = monotonic();
+        const staleCutoff = now - 15_000;
+        for (const {0: id, 1: ad} of this._athleteData) {
+            if (ad.mostRecentState && ad.internalUpdated < staleCutoff) {
+                ad.mostRecentState = null;
+                let ed;
+                if (id === this.watchingId) {
+                    if (this.listenerCount('athlete/watching')) {
+                        this.emit('athlete/watching', ed || (ed = this._formatAthleteData(ad, now)));
+                    }
+                    this._adV2Emitter.emit(`athlete/watching/v2`, q => this._formatAthleteDataV2(ad, q, now));
+                }
+                if (id === this.athleteId) {
+                    if (this.listenerCount('athlete/self')) {
+                        this.emit('athlete/self', ed || (ed = this._formatAthleteData(ad, now)));
+                    }
+                    this._adV2Emitter.emit(`athlete/self/v2`, q => this._formatAthleteDataV2(ad, q, now));
+                }
+                if (this.listenerCount(`athlete/${id}`)) {
+                    this.emit(`athlete/${id}`, ed || this._formatAthleteData(ad, now));
+                }
+                this._adV2Emitter.emit(`athlete/${id}/v2`, q => this._formatAthleteDataV2(ad, q, now));
             }
         }
     }
@@ -4293,7 +4377,7 @@ export class StatsProcessor extends Events.EventEmitter {
                 data.athlete = this._applyAthletePrivacyFilter(athlete, ad);
             }
             if (resources.includes('state')) {
-                data.state = ad.mostRecentState ? this._formatState(ad.mostRecentState) : null;
+                data.state = state ? this._formatState(state) : null;
             }
             if (resources.includes('timeInPowerZones')) {
                 data.timeInPowerZones = ad.eventPrivacy.hideFTP ? undefined : ad.timeInPowerZones.get();

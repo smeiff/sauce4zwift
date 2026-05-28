@@ -15,6 +15,13 @@ const settings = Common.settingsStore.get(null, {
 });
 const athleteChatElements = new Map();
 
+let dmTargetingId = null;
+
+const q = new URLSearchParams(window.location.search);
+if (q.get('dm')) {
+    requestAnimationFrame(() => setDMTargeting(Number(q.get('dm'))));
+}
+
 
 function getTime() {
     const ts = Common.getRealTime();
@@ -76,7 +83,7 @@ function liveDataFormatter(data) {
         data.stats.power.smooth[15] != null ?
             H.power(data.stats.power.smooth[15], {suffix: true, html: true}) :
             null,
-        data.state.heartrate ? H.number(data.state.heartrate, {suffix: 'bpm', html: true}) : null,
+        data.state?.heartrate ? H.number(data.state.heartrate, {suffix: 'bpm', html: true}) : null,
     ];
     const gap = data.watching ? null : data.gap;
     if (gap != null) {
@@ -93,8 +100,58 @@ function setMsgOpacity() {
 }
 
 
+function sendMessage() {
+    const inputEl = document.querySelector('#send-message input');
+    const msg = inputEl.value;
+    inputEl.value = '';
+    Common.rpc.chatMessage(msg, {to: dmTargetingId || 0});
+}
+
+
+async function setDMTargeting(id) {
+    const athlete = await Common.rpc.getAthlete(id);
+    dmTargetingId = id;
+    doc.querySelector('#send-message').dataset.dmId = id;
+    doc.querySelector('.dm-selection .avatar img').src = athlete?.avatar || 'images/blankavatar.png';
+    doc.querySelector('.dm-selection').title = `Direct messaging ${athlete?.sanitizedFullname || id}`;
+    doc.querySelector('#send-message input').placeholder = 'Direct Message...';
+}
+
+
+function clearDMTargeting() {
+    dmTargetingId = null;
+    delete doc.querySelector('#send-message').dataset.dmId;
+    doc.querySelector('.dm-selection .avatar img').src = 'images/blankavatar.png';
+    doc.querySelector('.dm-selection').title = '';
+    doc.querySelector('#send-message input').placeholder = 'Send Message...';
+}
+
+
+function updateConnStatus(status) {
+    doc.classList.toggle('has-game-connection', !!status?.connected);
+}
+
+
 export async function main() {
     Common.initInteractionListeners();
+    Common.subscribe('status', updateConnStatus, {source: 'gameConnection', persistent: true});
+    updateConnStatus(await Common.rpc.getGameConnectionStatus());
+    document.querySelector('#send-message input').addEventListener('keyup', ev => {
+        if (ev.key === 'Enter') {
+            sendMessage();
+        }
+    });
+    document.querySelector('#send-message ms#send-icon').addEventListener('click', sendMessage);
+    doc.addEventListener('click', ev => {
+        const dm = ev.target.closest('.dm-reply');
+        if (!dm) {
+            return;
+        }
+        const athleteId = Number(dm.closest('[data-from]').dataset.from);
+        setDMTargeting(athleteId);
+    });
+    document.querySelector('#send-message .dm-selection .cancel')
+        .addEventListener('click', clearDMTargeting);
     const content = document.querySelector('#content');
     const fadeoutTime = 5;
     content.style.setProperty('--fadeout-time', `${fadeoutTime}s`);
@@ -161,8 +218,11 @@ export async function main() {
 
 
     function onChatMessage(chat, age, options) {
+        const dm = !!chat.to;
         const lastEntry = getLastEntry();
-        if (lastEntry && Number(lastEntry.dataset.from) === chat.from &&
+        if (lastEntry &&
+            Number(lastEntry.dataset.from) === chat.from &&
+            lastEntry.classList.contains('dm') === dm &&
             !lastEntry.classList.contains('fadeout')) {
             lastEntry.dataset.ts = chat.ts;
             if (!chat.muted) {
@@ -180,10 +240,9 @@ export async function main() {
         entry.dataset.from = chat.from;
         entry.dataset.ts = chat.ts;
         entry.classList.add('entry');
-        if (chat.to) {
-            entry.classList.add('private');
-        } else {
-            entry.classList.add('public');
+        if (dm) {
+            entry.classList.add('dm');
+            entry.title = 'Direct Message';
         }
         if (!chat.muted) {
             const name = [chat.firstName, chat.lastName].filter(x => x).join(' ');
@@ -203,6 +262,7 @@ export async function main() {
                         <div class="chunk">${Common.sanitize(chat.message)}</div>
                     </div>
                 </div>
+                <div title="Direct message reply" class="dm-reply only-game-connection"><ms>reply</ms></div>
             `;
         } else {
             const name = [chat.firstName, chat.lastName].filter(x => x).join('');
